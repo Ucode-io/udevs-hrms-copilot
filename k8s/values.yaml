@@ -1,0 +1,147 @@
+# Copy this to Ucode-io/deployments as
+#   clusters/cluster-prod/ucode-prod/udevs-hrms-copilot/values.yaml
+#
+# The folder name must equal the GitHub repository name: deploy.yml resolves it
+# from `github.event.repository.name` and rewrites `image.tag` here on every
+# push to main. Without the file the deploy job fails at "Update image tag" —
+# which is exactly why pbx-transcript-worker's pipeline is red.
+#
+# Two values below are marked TODO and are the only things this service cannot
+# infer for itself: the host it answers on, and the origin allowed to call it.
+global:
+  replicaCount: 1
+  environment: {}
+replicaCount: 1
+
+image:
+  registry: ghcr.io/
+  repository: ucode-io/udevs-hrms-copilot
+  pullPolicy: IfNotPresent
+  # Rewritten by ci-cd on every deploy; the value here only seeds the first one.
+  tag: "1"
+imagePullSecrets: "gitlab-registry"
+nameOverride: ""
+fullnameOverride: ""
+labels:
+  app: udevs-hrms-copilot
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "vault-auth"
+
+# Secrets are injected as a file at /app/.env, and the container is started with
+# --env-file-if-exists=/app/.env to read it (see Dockerfile).
+#
+# Note the `=` in the template below rather than the `: ` other services use.
+# Node's --env-file parser reads KEY=value and silently ignores a line without
+# an `=`, so a colon-separated file would leave the service running with no
+# Anthropic key and no ucode service key — starting cleanly, answering nothing,
+# and keeping history in memory. Keep the `=`.
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/auth-path: "auth/kubernetes-ucode"
+  vault.hashicorp.com/agent-inject-secret-.env: "secret/data/k8s/ucode-prod/hrms-copilot"
+  vault.hashicorp.com/secret-volume-path-.env: "/app"
+  vault.hashicorp.com/role: "ucode-prod"
+  vault.hashicorp.com/agent-inject-template-.env: |
+    {{- with secret "secret/data/k8s/ucode-prod/hrms-copilot" -}}
+    {{- range $key, $value := .Data.data }}
+    {{ $key }}={{ $value }}
+    {{- end }}
+    {{ end -}}
+podLabels:
+  app: udevs-hrms-copilot
+podSecurityContext: {}
+securityContext: {}
+
+vault:
+  enabled: false
+  secretName: vault-secrets
+  variables:
+    VAULT_TOKEN: vault_token
+    SECRETS_PATH:
+
+# Non-secret configuration. Everything sensitive lives in Vault under
+# secret/data/k8s/ucode-prod/hrms-copilot:
+#   ANTHROPIC_API_KEY, UCODE_SERVICE_API_KEY, HRMS_EMPLOYEE_ROLE_ID
+environment:
+  PORT: "8080"
+  UCODE_BASE_URL: "https://api.admin.u-code.io"
+  UCODE_PROJECT_ID: "9a462573-ce11-4288-928a-a6ba754b6998"
+  UCODE_ENVIRONMENT_ID: "2f73835f-3a29-46c8-951e-75119db9bfc0"
+  COPILOT_MODEL: "claude-sonnet-5"
+  COPILOT_EFFORT: "high"
+  # TODO: the origin the HRMS admin panel is served from. The service refuses
+  # any other origin, and the code's default is http://localhost:5199 — leave
+  # this unset and the deployed Copilot answers the browser with a CORS error
+  # that looks exactly like the service being down.
+  CORS_ORIGINS: "https://TODO-hrms-admin-host"
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+
+# HTTP only — no gRPC surface on this service.
+service:
+  type: ClusterIP
+  annotations: {}
+  specs:
+    - port: 8080
+      targetPort: 8080
+      name: http
+
+ingress:
+  enabled: true
+  rules:
+    - annotations:
+        kubernetes.io/ingress.class: nginx
+        acme.cert-manager.io/http01-edit-in-place: "true"
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        # CORS is enforced by the service itself against CORS_ORIGINS, so the
+        # ingress does not add its own permissive header here.
+        #
+        # Answers stream over SSE and a long one runs for minutes: the default
+        # 60s proxy read timeout would cut a reply mid-sentence, and buffering
+        # would hold the whole stream back and deliver it at once, which looks
+        # exactly like the Copilot hanging.
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+        nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      type: web
+      hosts:
+        # TODO: confirm the hostname. Following the convention of its
+        # neighbours (doc-generator.u-code.io); whatever is chosen has to match
+        # VITE_COPILOT_URL in the HRMS admin panel, because the browser calls
+        # this service directly.
+        - host: "hrms-copilot.u-code.io"
+          path: /
+          servicePort: 8080
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: workload
+              operator: In
+              values:
+                - "ucode-prod"
