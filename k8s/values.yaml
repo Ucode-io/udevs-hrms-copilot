@@ -123,10 +123,20 @@ ingress:
         nginx.ingress.kubernetes.io/proxy-buffering: "off"
       type: web
       hosts:
-        # TODO: confirm the hostname. Following the convention of its
-        # neighbours (doc-generator.u-code.io); whatever is chosen has to match
-        # VITE_COPILOT_URL in the HRMS admin panel, because the browser calls
-        # this service directly.
+        # Named for what it is: this service only speaks HRMS, so the
+        # platform-wide copilot.u-code.io was considered and left free for a
+        # copilot that serves the platform. Follows its neighbours
+        # (doc-generator.u-code.io).
+        #
+        # Two things must match this exactly, or the panel talks to nothing:
+        # VITE_COPILOT_URL in the HRMS admin (baked in at build time — a rebuild,
+        # not a restart), and CORS_ORIGINS in Vault, which holds the panel's own
+        # origin. The browser calls this service directly, not through
+        # api.admin.u-code.io.
+        #
+        # Needs a DNS record pointing at the ingress before the first deploy:
+        # cert-manager solves the http01 challenge over this name, so without it
+        # the certificate never issues.
         - host: "hrms-copilot.u-code.io"
           path: /
           servicePort: 8080

@@ -6,6 +6,7 @@ import { CopilotDataTools } from "./data.tools";
 import { CopilotReportTools } from "./report.tools";
 import { CopilotMutationTools } from "./mutation.tools";
 import { CopilotNavigationTools } from "./navigation.tools";
+import { CopilotKnowledgeTools } from "./knowledge.tools";
 import { CopilotToolError } from "./tool-support";
 import type {
   CopilotPendingAction,
@@ -24,12 +25,14 @@ export class CopilotToolRegistry {
     reportTools: CopilotReportTools,
     mutationTools: CopilotMutationTools,
     navigationTools: CopilotNavigationTools,
+    knowledgeTools: CopilotKnowledgeTools,
   ) {
     const all = [
       ...dataTools.getTools(),
       ...reportTools.getTools(),
       ...mutationTools.getTools(),
       ...navigationTools.getTools(),
+      ...knowledgeTools.getTools(),
     ];
     this.tools = new Map(all.map((t) => [t.name, t]));
     this.logger.log(`Registered ${this.tools.size} tools`);

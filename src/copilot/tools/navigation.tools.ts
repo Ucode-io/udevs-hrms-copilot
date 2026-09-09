@@ -105,6 +105,18 @@ const PAGES: Record<string, PageDef> = {
     label: "Открыть кандидатов",
     kind: "reports",
   },
+  knowledge_base: {
+    path: "/knowledge-base",
+    label: "Открыть базу знаний",
+    kind: "knowledge",
+  },
+  knowledge_article: {
+    path: "/knowledge-base/articles/:id",
+    label: "Открыть статью",
+    kind: "knowledge",
+    needsRowId: true,
+    description: "The rowId is an article guid from kb_list_articles.",
+  },
   settings: { path: "/settings", label: "Открыть настройки", kind: "settings" },
 };
 

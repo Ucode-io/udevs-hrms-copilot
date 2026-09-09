@@ -10,6 +10,7 @@ import { CopilotDataTools } from "./tools/data.tools";
 import { CopilotReportTools } from "./tools/report.tools";
 import { CopilotMutationTools } from "./tools/mutation.tools";
 import { CopilotNavigationTools } from "./tools/navigation.tools";
+import { CopilotKnowledgeTools } from "./tools/knowledge.tools";
 
 @Module({
   controllers: [CopilotController],
@@ -24,6 +25,7 @@ import { CopilotNavigationTools } from "./tools/navigation.tools";
     CopilotReportTools,
     CopilotMutationTools,
     CopilotNavigationTools,
+    CopilotKnowledgeTools,
   ],
 })
 export class CopilotModule {}

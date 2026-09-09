@@ -17,6 +17,13 @@
 # exist because a schema dump does not reveal that a column holds an array, that
 # a filter is mandatory for the rows to mean what you think, or that two
 # spellings of the same field coexist in production.
+#
+# Two tables are absent on purpose rather than by omission. `employee_works` is
+# half of what an employee is, so it is written by mutation.tools.ts and never
+# named by the model. `knowledge_base_articles` holds its body as a serialized
+# BlockNote document and its children as a tree that a delete has to walk — a
+# generic create_item would write an object where a JSON string belongs and
+# leave a page that opens blank, so knowledge.tools.ts owns it instead.
 
 tables:
   - slug: user_base

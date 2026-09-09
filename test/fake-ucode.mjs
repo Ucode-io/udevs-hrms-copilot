@@ -162,7 +162,41 @@ const employeeWorks = [];
 const copilotConversations = [];
 const copilotAudit = [];
 
+/**
+ * The Knowledge Base: a tree of articles whose body is a BlockNote document the
+ * column holds as a JSON *string*, and whose parent is a self-relation named
+ * after the table rather than `parent_id`. Both are reproduced exactly, because
+ * both are silent when they are wrong — a body written as an object parses back
+ * as an empty document, and a parent written to `parent_id` is dropped and
+ * leaves the article at the root.
+ */
+const kbArticle = (guid, parent, title, icon, blocks) => ({
+  guid,
+  knowledge_base_articles_id: parent,
+  title,
+  icon,
+  content: JSON.stringify(blocks),
+  companies_id: COMPANY,
+  deleted_at: null,
+  created_at: "2026-01-01T00:00:00",
+  updated_at: "2026-01-01T00:00:00",
+});
+
+const knowledgeArticles = [
+  kbArticle("kb-root", null, "База знаний компании", "🏠", [
+    { type: "paragraph", content: "Внутренняя база знаний." },
+    { type: "heading", props: { level: 2 }, content: "Разделы" },
+    { type: "pageLink", props: { articleId: "kb-vacation" } },
+  ]),
+  kbArticle("kb-vacation", "kb-root", "Отпуска", "🏖", [
+    { type: "heading", props: { level: 2 }, content: "Как оформить" },
+    { type: "bulletListItem", content: "Согласовать с руководителем" },
+  ]),
+  kbArticle("kb-vacation-sick", "kb-vacation", "Больничный", "🤒", []),
+];
+
 const TABLES = {
+  knowledge_base_articles: knowledgeArticles,
   copilot_conversations: copilotConversations,
   copilot_audit: copilotAudit,
   user_base: employees,
@@ -217,6 +251,16 @@ const SCHEMA = {
     proposed: "boolean", executed: "boolean", ok: "boolean",
     summary: "text", error: "text",
     created_at: "timestamp without time zone",
+    deleted_at: "timestamp without time zone",
+  },
+  knowledge_base_articles: {
+    guid: "uuid", knowledge_base_articles_id: "uuid", title: "character varying",
+    icon: "character varying",
+    // The body is a document, not a paragraph: `varchar` in ucode, and a whole
+    // article of blocks goes in as one JSON string.
+    content: "text",
+    companies_id: "uuid",
+    created_at: "timestamp without time zone", updated_at: "timestamp without time zone",
     deleted_at: "timestamp without time zone",
   },
   departments: { guid: "uuid", title: "character varying", companies_id: "uuid", deleted_at: "timestamp without time zone" },

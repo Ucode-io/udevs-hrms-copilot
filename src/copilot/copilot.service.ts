@@ -33,8 +33,18 @@ const MAX_TURNS = 8;
  * would cut answers off mid-sentence. Streaming makes a figure this large safe.
  */
 const MAX_TOKENS = 64_000;
-/** Hard cap on a single model stream, so a stalled call cannot hold the SSE open. */
-const STREAM_TIMEOUT_MS = 120_000;
+/**
+ * Hard cap on a single model stream, so a stalled call cannot hold the SSE open.
+ *
+ * Raised from 120s once the Knowledge Base landed: writing an article is one
+ * turn that emits a whole document, where every other tool call emits a filter.
+ * At 120s that turn was the only thing in the service that could hit a wall
+ * while the loop still had three minutes of budget it was never allowed to
+ * spend — the person watched it think and then saw it stop for no reason they
+ * could see. The loop deadline below is the real backstop; this one only exists
+ * so a dead connection is not held open forever.
+ */
+const STREAM_TIMEOUT_MS = 240_000;
 /** Wall-clock budget for the whole loop across all its turns. */
 const LOOP_DEADLINE_MS = 300_000;
 /** Messages of history sent to the model per turn. The stored Thread is untrimmed. */
@@ -338,11 +348,20 @@ export class CopilotService {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        yield* this.stop(conversation, inputTokens, outputTokens, this.timedOut());
+        yield* this.stop(
+          conversation,
+          inputTokens,
+          outputTokens,
+          this.timedOut(
+            `loop budget of ${LOOP_DEADLINE_MS}ms spent after ${turn} turn(s)`,
+          ),
+        );
         return;
       }
 
-      const { signal, cancel } = turnSignal(Math.min(STREAM_TIMEOUT_MS, remaining));
+      const budget = Math.min(STREAM_TIMEOUT_MS, remaining);
+      const startedAt = Date.now();
+      const { signal, cancel } = turnSignal(budget);
       let final: Anthropic.Message;
       // Snapshot, not the live flag: the live one flips on this turn's first
       // delta, and testing it per delta would break a word in half.
@@ -388,7 +407,14 @@ export class CopilotService {
         final = await stream.finalMessage();
       } catch (e) {
         if (signal.aborted) {
-          yield* this.stop(conversation, inputTokens, outputTokens, this.timedOut());
+          yield* this.stop(
+            conversation,
+            inputTokens,
+            outputTokens,
+            this.timedOut(
+              `turn ${turn + 1} ran past its ${budget}ms stream budget (${Date.now() - startedAt}ms elapsed, ${wroteText ? "text had started" : "no text yet"})`,
+            ),
+          );
           return;
         }
         const mapped = this.mapAnthropicError(e);
@@ -685,7 +711,14 @@ export class CopilotService {
     };
   }
 
-  private timedOut(): CopilotStreamEvent {
+  /**
+   * `reason` exists because nothing else records this. Every other way a turn
+   * ends badly writes a log line; a timeout wrote none, so the one failure an
+   * operator is most likely to be asked about — "он долго думал и оборвался" —
+   * left an empty log and two different budgets to guess between.
+   */
+  private timedOut(reason: string): CopilotStreamEvent {
+    this.logger.warn(`Copilot turn stopped: ${reason}`);
     return {
       type: "error",
       message: "The Copilot took too long and the request was stopped.",

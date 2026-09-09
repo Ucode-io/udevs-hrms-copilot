@@ -81,6 +81,7 @@ export type CopilotLinkKind =
   | "reports"
   | "time"
   | "settings"
+  | "knowledge"
   | "external";
 
 /**
