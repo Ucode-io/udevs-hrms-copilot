@@ -1,0 +1,170 @@
+# The Allowlist: which HRMS tables the Copilot may touch at all, and the Hints
+# that make its answers correct.
+#
+# This narrows what the Caller's ucode role already permits; it never widens it.
+# A table absent here is invisible to the Copilot even if the person can open it
+# in the UI. Two reasons to keep it tight: pay-and-contract tables should not be
+# one sentence away in a chat box, and every listed table costs prompt tokens.
+#
+# `description` is what the model sees in its catalogue — one line, written for
+# the model, not for a human reader.
+#
+# `label` is the opposite: it is printed above a result table when the model
+# does not supply its own title, so it is written for the person reading the
+# panel and follows the wording of the HRMS UI.
+#
+# `hints` are returned by describe_table alongside the real column list. They
+# exist because a schema dump does not reveal that a column holds an array, that
+# a filter is mandatory for the rows to mean what you think, or that two
+# spellings of the same field coexist in production.
+
+tables:
+  - slug: user_base
+    label: Сотрудники
+    description: >-
+      Employees and other system users. THE main HR table: names, contacts, hire
+      and birth dates, department / position / location / division, employment
+      type, experience level, status.
+    hints:
+      - >-
+        This table holds every kind of user, not only employees. Unless the
+        person explicitly asks about non-employees, always filter
+        role_id eq <the employee role id> — omitting it mixes in accounts that
+        are not staff and inflates every count.
+      - >-
+        There is no age column. Age N means birth_date <= (today minus N years).
+        "Younger than 22 and older than 19" is therefore
+        birth_date > today-22y AND birth_date <= today-19y — note the boundary:
+        someone who turned 22 today is no longer younger than 22.
+      - >-
+        status, gender and language are ARRAY columns. Filter them with eq and a
+        single value (the compiler wraps it) or with in and a list. status is
+        "active" or "dismissed"; a plain employee query means active.
+      - >-
+        Relations come in pairs — departments_id holds the guid,
+        departments_id_data holds {guid, title}. Filter on the _id column,
+        report the _data title. Same for positions_id, locations_id,
+        divisions_id, employment_types_id, experience_levels_id, role_id.
+      - >-
+        Dismissal fields exist under TWO spellings in production —
+        dismissal_types_id and dismissial_types_id (likewise
+        dismissal_reasons_id / dismissial_reasons_id). Read whichever
+        describe_table reports; do not assume the correct spelling exists.
+      - >-
+        custom_data holds dynamic per-company fields as JSON stored in a string
+        column. It cannot be filtered on; read it only to answer about one named
+        person.
+      - >-
+        second_name is the surname and middle_name is the patronymic — Russian
+        naming order, not English "middle name".
+
+  - slug: attendance
+    label: Посещаемость
+    description: >-
+      Daily attendance records per employee: check-in / check-out times, lateness,
+      whether the day was present, late or absent, and where the record came from.
+    hints:
+      - >-
+        Three different status-like columns, do not confuse them: status is the
+        approval state (accepted / rejected / requested), action_status is what
+        actually happened (present / late / absent), source_type is where the
+        record came from (manual / integration / absences).
+      - >-
+        user_base_id links to the employee; user_base_id_data carries their name.
+      - >-
+        For a month or period summary prefer run_report("attendance") — it
+        returns the same figures the Reports page shows, already reconciled.
+        Aggregate this table directly only for a cut the report does not offer.
+
+  - slug: absences
+    label: Отсутствия
+    description: >-
+      Time-off records — vacation, sick leave and other absence types, with their
+      policy, period and approval state.
+    hints:
+      - Links to the employee through user_base_id.
+      - The absence type comes from absence_policies via its relation column.
+
+  - slug: absence_policies
+    label: Политики отсутствий
+    description: Types of leave a company defines (vacation, sick leave, unpaid), with their rules.
+
+  - slug: departments
+    label: Отделы
+    description: Company departments. Referenced by user_base.departments_id.
+
+  - slug: positions
+    label: Должности
+    description: Job titles. Referenced by user_base.positions_id.
+
+  - slug: divisions
+    label: Подразделения
+    description: Organisational divisions above or beside departments.
+
+  - slug: locations
+    label: Локации
+    description: Offices and work sites. Referenced by user_base.locations_id.
+
+  - slug: employment_types
+    label: Типы занятости
+    description: Full-time, part-time, contract and similar. Referenced by user_base.employment_types_id.
+
+  - slug: experience_levels
+    label: Уровни опыта
+    description: Seniority grades. Referenced by user_base.experience_levels_id.
+
+  - slug: skills
+    label: Навыки
+    description: The skill catalogue employees can be tagged with.
+
+  - slug: trainings
+    label: Тренинги
+    description: Training courses and sessions offered to employees.
+
+  - slug: documents
+    label: Документы
+    description: Employee document records (metadata only, not file contents).
+
+  - slug: vacancies
+    label: Вакансии
+    description: Open positions being recruited for.
+
+  - slug: candidates
+    label: Кандидаты
+    description: Applicants in the recruiting pipeline, with their stage.
+
+# Reports exposed through run_report. Each maps to a method on the HRMS report
+# gateway and returns figures already reconciled with the Reports pages, so a
+# number quoted from here always matches what the person sees on screen.
+reports:
+  - name: attendance
+    method: get_attendance
+    description: >-
+      Attendance summary for one month across the company: scheduled and worked
+      days, on-time days, total late time and late arrivals, absent days split
+      into unexcused / excused / paid / unpaid, plus absence counts by policy and
+      the employees with the most late time.
+    params:
+      - name: month
+        description: Month as YYYY-MM. Defaults to the most recent complete month.
+        required: false
+
+  - name: tasks
+    method: task_list
+    description: >-
+      Every task on the Tasks board with its status, priority, assignees and
+      deadline, plus how many sit in each status group (to do / in progress /
+      done). Tasks are not an HRMS table and cannot be reached with list_items —
+      this report is the only way to see them. It takes no parameters and always
+      returns the whole board.
+    params: []
+
+  - name: attendance_table
+    method: get_attendance_table
+    description: >-
+      Per-employee attendance rows behind the attendance summary, including each
+      person's absence breakdown by policy and whether they have a work schedule.
+    params:
+      - name: month
+        description: Month as YYYY-MM.
+        required: false

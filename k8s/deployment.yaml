@@ -1,0 +1,77 @@
+# HRMS Copilot — stateless SSE service. No database of its own: conversations
+# and the audit trail live in the HRMS ucode project (see CONTEXT.md).
+#
+# Secrets:
+#   kubectl -n ucode-prod create secret generic udevs-hrms-copilot-config \
+#     --from-literal=ANTHROPIC_API_KEY="sk-ant-..." \
+#     --from-literal=UCODE_SERVICE_API_KEY="P-..." \
+#     --from-literal=HRMS_EMPLOYEE_ROLE_ID="..."
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: udevs-hrms-copilot
+  namespace: ucode-prod
+  labels:
+    app: udevs-hrms-copilot
+spec:
+  # ponytail: 1 replica — the pending-action claim is in-process (see
+  # ConversationStore.claimPendingAction). Scaling out needs a shared claim
+  # (Redis SETNX) first.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: udevs-hrms-copilot
+  template:
+    metadata:
+      labels:
+        app: udevs-hrms-copilot
+    spec:
+      imagePullSecrets:
+        - name: ghcr-registry
+      containers:
+        - name: copilot
+          image: ghcr.io/ucode-io/udevs-hrms-copilot:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: COPILOT_MODEL
+              value: "claude-sonnet-5"
+            - name: UCODE_BASE_URL
+              value: "https://api.admin.u-code.io"
+            - name: UCODE_PROJECT_ID
+              value: "9a462573-ce11-4288-928a-a6ba754b6998"
+            - name: UCODE_ENVIRONMENT_ID
+              value: "2f73835f-3a29-46c8-951e-75119db9bfc0"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: udevs-hrms-copilot-config, key: ANTHROPIC_API_KEY }
+            - name: UCODE_SERVICE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: udevs-hrms-copilot-config, key: UCODE_SERVICE_API_KEY }
+            - name: HRMS_EMPLOYEE_ROLE_ID
+              valueFrom:
+                secretKeyRef: { name: udevs-hrms-copilot-config, key: HRMS_EMPLOYEE_ROLE_ID }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: udevs-hrms-copilot
+  namespace: ucode-prod
+spec:
+  selector:
+    app: udevs-hrms-copilot
+  ports:
+    - port: 80
+      targetPort: 8080
