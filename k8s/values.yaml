@@ -6,8 +6,9 @@
 # push to main. Without the file the deploy job fails at "Update image tag" —
 # which is exactly why pbx-transcript-worker's pipeline is red.
 #
-# Two values below are marked TODO and are the only things this service cannot
-# infer for itself: the host it answers on, and the origin allowed to call it.
+# One value below is marked TODO: the hostname this service answers on. Every
+# other setting lives in Vault (see the block above `environment`), so this file
+# describes where the service runs and Vault describes how it behaves.
 global:
   replicaCount: 1
   environment: {}
@@ -62,21 +63,32 @@ vault:
     VAULT_TOKEN: vault_token
     SECRETS_PATH:
 
-# Non-secret configuration. Everything sensitive lives in Vault under
-# secret/data/k8s/ucode-prod/hrms-copilot:
-#   ANTHROPIC_API_KEY, UCODE_SERVICE_API_KEY, HRMS_EMPLOYEE_ROLE_ID
+# Everything the service reads lives in Vault under
+# secret/data/k8s/ucode-prod/hrms-copilot and arrives in /app/.env. Expected
+# keys, so the repository still states the contract even though the values are
+# not here:
+#
+#   ANTHROPIC_API_KEY        Anthropic key the answers are billed to
+#   UCODE_SERVICE_API_KEY    ucode key for copilot_conversations / copilot_audit.
+#                            Its own key, not the one the SPA ships in its
+#                            bundle — this is what signs the audit trail.
+#   HRMS_EMPLOYEE_ROLE_ID    role id that marks a user_base row as an employee
+#   UCODE_BASE_URL           https://api.admin.u-code.io
+#   UCODE_PROJECT_ID         9a462573-ce11-4288-928a-a6ba754b6998
+#   UCODE_ENVIRONMENT_ID     2f73835f-3a29-46c8-951e-75119db9bfc0
+#   CORS_ORIGINS             origin of the HRMS admin panel. The service refuses
+#                            every other origin, and its default is
+#                            http://localhost:5199 — omit this and the browser
+#                            gets a CORS error that reads as the service being
+#                            down.
+#   COPILOT_MODEL            claude-sonnet-5
+#   COPILOT_EFFORT           high
+#
+# PORT stays below on purpose: it has to agree with the two port numbers in
+# this same file, and a mismatch is silent — the pod starts and the ingress
+# routes to nothing.
 environment:
   PORT: "8080"
-  UCODE_BASE_URL: "https://api.admin.u-code.io"
-  UCODE_PROJECT_ID: "9a462573-ce11-4288-928a-a6ba754b6998"
-  UCODE_ENVIRONMENT_ID: "2f73835f-3a29-46c8-951e-75119db9bfc0"
-  COPILOT_MODEL: "claude-sonnet-5"
-  COPILOT_EFFORT: "high"
-  # TODO: the origin the HRMS admin panel is served from. The service refuses
-  # any other origin, and the code's default is http://localhost:5199 — leave
-  # this unset and the deployed Copilot answers the browser with a CORS error
-  # that looks exactly like the service being down.
-  CORS_ORIGINS: "https://TODO-hrms-admin-host"
 
 volumes:
   enabled: false
