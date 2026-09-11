@@ -23,7 +23,15 @@ image:
   pullPolicy: IfNotPresent
   # Rewritten by ci-cd on every deploy; the value here only seeds the first one.
   tag: "1"
-imagePullSecrets: "gitlab-registry"
+# ghcr-registry, NOT the gitlab-registry every neighbour in ucode-prod names.
+# That secret holds credentials for gitlab.udevs.io:5050 and nothing for
+# ghcr.io — the neighbours only pull because their ghcr packages were made
+# public, so the anonymous pull succeeds and the wrong secret never shows.
+# A new ghcr package is private by default, so this one fails that way with
+# "failed to fetch anonymous token: 403 Forbidden", which reads like a missing
+# image rather than a missing credential. ghcr-registry is the secret that
+# actually carries ghcr.io auth; pbx-transcript-worker and sms pull with it.
+imagePullSecrets: "ghcr-registry"
 nameOverride: ""
 fullnameOverride: ""
 labels:
@@ -154,6 +162,17 @@ ingress:
         - host: "hrms-copilot.u-code.io"
           path: /
           servicePort: 8080
+      # Required, and not implied by the cert-manager annotations above.
+      # ingress-shim issues a certificate only for hosts listed in an Ingress
+      # `tls` block; with the annotations alone it does nothing at all — no
+      # Certificate, no Order, no error — and the host quietly serves the
+      # ingress controller's fake self-signed certificate instead. The panel
+      # calls this service over HTTPS from the browser, so that failure is
+      # total and looks like the service being down.
+      tls:
+        - secretName: hrms-copilot-tls
+          hosts:
+            - "hrms-copilot.u-code.io"
 
 resources:
   limits:
