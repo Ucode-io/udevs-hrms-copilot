@@ -1,0 +1,5 @@
+{
+    "repo_url": "https://gitlab.udevs.io/api/v4/projects/476/packages/helm/stable",
+    "chart": "microservice_v2",
+    "version": "0.6.2"
+  }

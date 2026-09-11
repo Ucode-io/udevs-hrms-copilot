@@ -1,14 +1,17 @@
-# Copy this to Ucode-io/deployments as
+# Copy this AND config.json next to it into Ucode-io/deployments as
 #   clusters/cluster-prod/ucode-prod/udevs-hrms-copilot/values.yaml
+#   clusters/cluster-prod/ucode-prod/udevs-hrms-copilot/config.json
+#
+# Both files are required: config.json names the Helm chart (microservice_v2)
+# the folder is rendered with, and every neighbour in ucode-prod carries one.
 #
 # The folder name must equal the GitHub repository name: deploy.yml resolves it
 # from `github.event.repository.name` and rewrites `image.tag` here on every
 # push to main. Without the file the deploy job fails at "Update image tag" —
 # which is exactly why pbx-transcript-worker's pipeline is red.
 #
-# One value below is marked TODO: the hostname this service answers on. Every
-# other setting lives in Vault (see the block above `environment`), so this file
-# describes where the service runs and Vault describes how it behaves.
+# Everything else lives in Vault (see the block above `environment`), so this
+# file describes where the service runs and Vault describes how it behaves.
 global:
   replicaCount: 1
   environment: {}
@@ -136,7 +139,18 @@ ingress:
         #
         # Needs a DNS record pointing at the ingress before the first deploy:
         # cert-manager solves the http01 challenge over this name, so without it
-        # the certificate never issues.
+        # the certificate never issues. The name currently answers 404 through
+        # the *.u-code.io wildcard, which is not a record and will not satisfy
+        # the challenge.
+        #
+        # Do NOT move this under *.hrms.udevs.io: that wildcard is already
+        # claimed by career-site-web-ingress in frontend-prod, so any host under
+        # it reaches the career site rather than this service.
+        #
+        # The panel itself is frontend-prod/udevs-hrms-admin-web-ingress on
+        # hrms.udevs.io; a second copy answers on hrms.u-code.io from
+        # microfrontend-prod. Whichever one loads the Copilot has to appear in
+        # CORS_ORIGINS.
         - host: "hrms-copilot.u-code.io"
           path: /
           servicePort: 8080

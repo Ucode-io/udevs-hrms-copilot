@@ -80,7 +80,10 @@ in `Ucode-io/deployments` at
 from there. The folder name must equal this repository's name — `deploy.yml`
 derives it from `github.event.repository.name`.
 
-`k8s/values.yaml` here is the file to copy into that repository.
+`k8s/values.yaml` and `k8s/config.json` are the two files to copy into that
+repository, into that same folder. `config.json` names the Helm chart the
+folder is rendered with (`microservice_v2`); every neighbour in `ucode-prod`
+carries one, and the sync has nothing to render without it.
 
 ### Configuration
 

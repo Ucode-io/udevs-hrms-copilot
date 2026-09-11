@@ -114,11 +114,7 @@ export class ConversationStore {
     const conversation =
       this.mode === "ucode" ? await this.readOne(id) : this.memory.get(id) ?? null;
 
-    if (
-      !conversation ||
-      conversation.userId !== caller.userId ||
-      conversation.companiesId !== caller.companiesId
-    ) {
+    if (!conversation || !this.owns(caller, conversation)) {
       throw new NotFoundException("Conversation not found");
     }
     return conversation;
@@ -147,7 +143,7 @@ export class ConversationStore {
   async list(caller: CallerContext): Promise<Conversation[]> {
     if (this.mode === "memory") {
       return [...this.memory.values()]
-        .filter((c) => c.userId === caller.userId && c.thread.length > 0)
+        .filter((c) => this.owns(caller, c) && c.thread.length > 0)
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .slice(0, HISTORY_LIMIT);
     }
@@ -166,8 +162,23 @@ export class ConversationStore {
         }),
       },
     );
+    // The filter above is sent to ucode, but ucode SILENTLY DROPS a filter
+    // naming a column the table does not have — so a drifted or misspelled
+    // column would widen this to every conversation in the collection, under
+    // the service key, and hand back other people's titles. Re-check ownership
+    // on the way out, exactly as `load` does: the request is a hint, this is
+    // the guarantee.
     const rows = extractRows(body);
-    return rows.map(fromRow).filter((c) => c.thread.length > 0);
+    return rows
+      .map(fromRow)
+      .filter((c) => this.owns(caller, c) && c.thread.length > 0);
+  }
+
+  /** A Conversation belongs to one person in one Company, and to nobody else. */
+  private owns(caller: CallerContext, c: Conversation): boolean {
+    return (
+      c.userId === caller.userId && c.companiesId === caller.companiesId
+    );
   }
 
   /**
