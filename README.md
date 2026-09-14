@@ -98,7 +98,7 @@ vault kv put secret/k8s/ucode-prod/hrms-copilot \
   UCODE_BASE_URL="https://api.admin.u-code.io" \
   UCODE_PROJECT_ID="9a462573-ce11-4288-928a-a6ba754b6998" \
   UCODE_ENVIRONMENT_ID="2f73835f-3a29-46c8-951e-75119db9bfc0" \
-  CORS_ORIGINS="https://hrms.udevs.io" \
+  CORS_ORIGINS="https://hrms.ucode.co" \
   COPILOT_MODEL="claude-sonnet-5" \
   COPILOT_EFFORT="high"
 ```
@@ -110,9 +110,11 @@ Four of these are worth a second look:
   rather than the caller's — an audit trail its subject can delete is not an
   audit trail. Do not reuse the key the admin panel ships in its bundle, which
   every user of the panel already has.
-- **`CORS_ORIGINS` has no trailing slash** and must match the panel's origin
-  exactly. Get it wrong and the browser reports a CORS failure that reads as the
-  service being down.
+- **`CORS_ORIGINS` must match the panel's origin exactly** — scheme, host and
+  port. A trailing slash is stripped for you, since an `Origin` header never has
+  one; anything else wrong and the browser reports a CORS failure that reads as
+  the service being down. The panel answers on two hosts, `hrms.ucode.co` and
+  `hrms-admin.u-code.io`; whichever one people open has to be listed here.
 - **`HRMS_EMPLOYEE_ROLE_ID`** is the same id the panel uses as
   `VITE_EMPLOYEE_ROLE_ID`. Without it, every headcount silently counts
   non-employees.

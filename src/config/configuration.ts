@@ -54,9 +54,14 @@ export const loadConfig = (): CopilotConfig => {
 
   return {
     port: int("PORT", 8080),
+    // A trailing slash is stripped rather than honoured. An Origin header is
+    // scheme://host[:port] and never carries one, so "https://hrms.ucode.co/"
+    // matches nothing — and the way that fails is a browser CORS error that
+    // reads as the service being down, from a value that looks correct in
+    // Vault. Same treatment as UCODE_BASE_URL below, for the same reason.
     corsOrigins: str("CORS_ORIGINS", "http://localhost:5199")
       .split(",")
-      .map((o) => o.trim())
+      .map((o) => o.trim().replace(/\/+$/, ""))
       .filter(Boolean),
     anthropicApiKey: optional("ANTHROPIC_API_KEY"),
     model: str("COPILOT_MODEL", "claude-sonnet-5"),

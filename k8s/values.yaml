@@ -155,10 +155,11 @@ ingress:
         # claimed by career-site-web-ingress in frontend-prod, so any host under
         # it reaches the career site rather than this service.
         #
-        # The panel itself is frontend-prod/udevs-hrms-admin-web-ingress on
-        # hrms.udevs.io; a second copy answers on hrms.u-code.io from
-        # microfrontend-prod. Whichever one loads the Copilot has to appear in
-        # CORS_ORIGINS.
+        # The panel itself now answers on hrms.ucode.co — its real address since
+        # the domain move — and on hrms-admin.u-code.io, which is kept while that
+        # settles. Both are hosts of udevs-hrms-admin-web-ingress. Whichever one
+        # people open has to appear in CORS_ORIGINS, and that value lives in
+        # Vault: changing it here changes nothing.
         - host: "hrms-copilot.u-code.io"
           path: /
           servicePort: 8080
