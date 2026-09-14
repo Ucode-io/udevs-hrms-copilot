@@ -12,6 +12,11 @@ export interface CopilotConfig {
   maxConcurrentStreams: number;
   ucode: {
     baseUrl: string;
+    /**
+     * Fallback project, used when a request carries no Project-Id header, and
+     * the fixed project of the Copilot's own bookkeeping — the service API key
+     * is issued against this one. Callers name their own project per request.
+     */
     projectId: string;
     environmentId: string;
     /** Used ONLY for the copilot's own bookkeeping collections. */

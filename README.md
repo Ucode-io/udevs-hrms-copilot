@@ -36,7 +36,11 @@ npm run start:dev
 | GET | `/copilot/conversations/:id` | One conversation, replayed |
 | GET | `/health` | Liveness |
 
-Every endpoint requires `Authorization: Bearer <ucode token>`.
+Every endpoint requires `Authorization: Bearer <ucode token>`, and takes an
+optional `Project-Id: <uuid>` naming the ucode project to read HRMS data from —
+the panel sends its own, and `UCODE_PROJECT_ID` is what a request without one
+falls back to. ucode authorizes the header against the caller's token, so it
+reaches nothing that token does not already open.
 
 ## One-time setup in ucode
 
@@ -103,7 +107,7 @@ vault kv put secret/k8s/ucode-prod/hrms-copilot \
   COPILOT_EFFORT="high"
 ```
 
-Four of these are worth a second look:
+Five of these are worth a second look:
 
 - **`UCODE_SERVICE_API_KEY` must be its own key.** It writes
   `copilot_conversations` and `copilot_audit` under the service's identity
@@ -115,6 +119,11 @@ Four of these are worth a second look:
   one; anything else wrong and the browser reports a CORS failure that reads as
   the service being down. The panel answers on two hosts, `hrms.ucode.co` and
   `hrms-admin.u-code.io`; whichever one people open has to be listed here.
+- **`UCODE_PROJECT_ID` is a fallback, not the project.** The panel sends its own
+  in a `Project-Id` header and that wins; this is what a request without one
+  gets, which keeps the service deployable ahead of a panel rebuild. It also
+  stays the fixed project of `copilot_conversations` and `copilot_audit`, whose
+  API key is issued against it — bookkeeping does not follow the caller.
 - **`HRMS_EMPLOYEE_ROLE_ID`** is the same id the panel uses as
   `VITE_EMPLOYEE_ROLE_ID`. Without it, every headcount silently counts
   non-employees.

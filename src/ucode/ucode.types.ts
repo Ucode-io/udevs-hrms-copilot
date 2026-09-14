@@ -81,6 +81,17 @@ export interface CallerContext {
   userId: string;
   /** The Company every request is scoped to. Never model- or client-supplied. */
   companiesId: string;
+  /**
+   * The ucode project this caller's HRMS data lives in — the panel's own
+   * `project-id`, sent as a header, falling back to UCODE_PROJECT_ID.
+   *
+   * Client-supplied where `companiesId` deliberately is not, because ucode
+   * enforces this one and does not enforce that one: naming a project reaches
+   * nothing the caller's token does not already open, since every call made
+   * with it is authorized inside that project. Omitting `companies_id`, by
+   * contrast, returns rows from every company.
+   */
+  projectId: string;
   /** The caller's raw bearer token, forwarded to ucode verbatim. */
   token: string;
 }

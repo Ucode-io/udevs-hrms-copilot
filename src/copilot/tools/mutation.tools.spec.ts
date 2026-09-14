@@ -26,7 +26,7 @@ const config: CopilotConfig = {
 };
 
 const ctx: CopilotToolContext = {
-  caller: { userId: "user-1", companiesId: "company-a", token: "tok" },
+  caller: { userId: "user-1", companiesId: "company-a", projectId: "project-1", token: "tok" },
   route: null,
 };
 

@@ -67,7 +67,12 @@ export class UcodeClient {
    * the same token the rest of the copilot already uses.
    */
   async fields(ctx: CallerContext, table: string): Promise<FieldDef[]> {
-    const cached = this.fieldCache.get(table);
+    // Keyed by project too, now that the caller names one: two projects can
+    // both have a `user_base` with different columns, and a cache keyed on the
+    // table alone would hand one project the other's schema — which does not
+    // fail, it silently filters on columns that are not there.
+    const key = `${ctx.projectId} ${table}`;
+    const cached = this.fieldCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.fields;
 
     let fields = await this.schemaFields(ctx, table);
@@ -76,7 +81,7 @@ export class UcodeClient {
       throw new UcodeError(`Table "${table}" has no readable columns.`, 404);
     }
 
-    this.fieldCache.set(table, {
+    this.fieldCache.set(key, {
       fields,
       expiresAt: Date.now() + FIELD_CACHE_TTL_MS,
     });
@@ -441,7 +446,15 @@ export class UcodeClient {
     opts: { serviceKey?: boolean } = {},
   ): Promise<unknown> {
     const url = new URL(this.config.ucode.baseUrl + path);
-    url.searchParams.set("project-id", this.config.ucode.projectId);
+    // The caller's project for their own data; the configured one for the
+    // Copilot's bookkeeping, whose API key is issued against it — an audit
+    // trail that follows whichever project the browser named is not one.
+    url.searchParams.set(
+      "project-id",
+      opts.serviceKey
+        ? this.config.ucode.projectId
+        : (ctx?.projectId ?? this.config.ucode.projectId),
+    );
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
 
     const headers: Record<string, string> = {

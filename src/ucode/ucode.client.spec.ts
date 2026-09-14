@@ -25,6 +25,7 @@ const config: CopilotConfig = {
 const caller: CallerContext = {
   userId: "user-1",
   companiesId: "company-a",
+  projectId: "project-1",
   token: "caller-token",
 };
 
@@ -281,6 +282,54 @@ describe("UcodeClient", () => {
         String(c[0]).includes("/schema"),
       );
       expect(schemaCalls).toHaveLength(1);
+    });
+
+    it("does not hand one project the schema cached for another", async () => {
+      // Two projects can both have a user_base with different columns. Sharing
+      // the entry does not fail — it filters on columns that are not there.
+      const fetchMock = mockFetch((url) => {
+        if (url.pathname.endsWith("/schema")) return schemaResponse;
+        return { data: { data: { count: 0, response: [] } } };
+      });
+
+      await client.list(caller, "user_base", {});
+      await client.list({ ...caller, projectId: "project-2" }, "user_base", {});
+
+      const schemaCalls = fetchMock.mock.calls.filter((c) =>
+        String(c[0]).includes("/schema"),
+      );
+      expect(schemaCalls).toHaveLength(2);
+    });
+  });
+
+  describe("project scoping", () => {
+    it("sends the caller's project, not the configured one", async () => {
+      const fetchMock = mockFetch((url) => {
+        if (url.pathname.endsWith("/schema")) return schemaResponse;
+        return { data: { data: { count: 0, response: [] } } };
+      });
+
+      await client.list({ ...caller, projectId: "project-9" }, "user_base", {});
+
+      for (const call of fetchMock.mock.calls) {
+        expect(new URL(String(call[0])).searchParams.get("project-id")).toBe(
+          "project-9",
+        );
+      }
+    });
+
+    it("pins the bookkeeping key to the configured project", async () => {
+      // The service API key is issued against that one project, and an audit
+      // trail that follows whichever project the browser named is not one.
+      const fetchMock = mockFetch(() => ({ data: { data: {} } }));
+
+      await client.request(null, "GET", "/v2/items/copilot_audit", undefined, {}, {
+        serviceKey: true,
+      });
+
+      expect(
+        new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("project-id"),
+      ).toBe("project-1");
     });
   });
 });

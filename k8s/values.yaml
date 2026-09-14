@@ -85,7 +85,12 @@ vault:
 #                            bundle — this is what signs the audit trail.
 #   HRMS_EMPLOYEE_ROLE_ID    role id that marks a user_base row as an employee
 #   UCODE_BASE_URL           https://api.admin.u-code.io
-#   UCODE_PROJECT_ID         9a462573-ce11-4288-928a-a6ba754b6998
+#   UCODE_PROJECT_ID         9a462573-ce11-4288-928a-a6ba754b6998. Only the
+#                            fallback now: the panel names its own project in a
+#                            Project-Id header, and this is what a request
+#                            without one gets. It also stays the fixed project
+#                            of the Copilot's own conversations and audit rows,
+#                            which the service API key is issued against.
 #   UCODE_ENVIRONMENT_ID     2f73835f-3a29-46c8-951e-75119db9bfc0
 #   CORS_ORIGINS             origin of the HRMS admin panel. The service refuses
 #                            every other origin, and its default is

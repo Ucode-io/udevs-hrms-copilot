@@ -17,9 +17,12 @@ async function bootstrap(): Promise<void> {
   app.enableCors({
     origin: config.corsOrigins,
     credentials: true,
-    // The SPA opens the SSE stream with fetch(), so it needs the auth header
-    // through and nothing else special.
-    allowedHeaders: ["Content-Type", "Authorization"],
+    // The SPA opens the SSE stream with fetch(), so the auth header has to come
+    // through. Project-Id must be listed too, and this one decides deploy
+    // order: a header the preflight does not allow is not dropped, it fails the
+    // whole request, so a panel that sends it against a service that does not
+    // list it cannot reach the Copilot at all. This service ships first.
+    allowedHeaders: ["Content-Type", "Authorization", "Project-Id"],
   });
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
