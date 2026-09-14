@@ -64,18 +64,26 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
       risk: "read",
       inputSchema: { type: "object", properties: {} },
       execute: async (_input, ctx) => {
-        const articles = await this.fetchAll(ctx);
+        const { articles, total } = await this.fetchAll(ctx);
         return {
           ok: true,
-          summary: `${articles.length} ${plural(articles.length, "статья", "статьи", "статей")} в базе знаний`,
+          summary: `${total} ${plural(total, "статья", "статьи", "статей")} в базе знаний`,
           data: {
-            count: articles.length,
+            count: total,
+            listed: articles.length,
             articles: articles.map((a) => ({
               guid: a.guid,
               title: a.title,
               icon: a.icon,
               parentId: a.parentId,
             })),
+            // Without this the model reads the array's length as the count and
+            // states it as fact — "в базе 300 статей" about a base of 412.
+            ...(articles.length < total
+              ? {
+                  partial: `Only ${articles.length} of ${total} articles are listed. Do not state the listed number as the total, and do not conclude an article is absent because it is not here.`,
+                }
+              : {}),
             note: "parentId null means a top-level article. An article's children are the ones whose parentId is its guid.",
           },
         };
@@ -104,7 +112,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
       execute: async (input, ctx) => {
         const guid = requireString(input.guid, "guid");
         const row = await this.requireArticle(ctx, guid);
-        const all = await this.fetchAll(ctx);
+        const { articles } = await this.fetchAll(ctx);
         const blocks = parseContent(row.content);
         const { kept, truncated } = capBlocks(blocks);
 
@@ -122,7 +130,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
                   truncated: `Only the first ${kept.length} of ${blocks.length} blocks are shown — the article is too long to hand over whole. Do NOT rewrite it from this: a replace built on a truncated body would delete the rest.`,
                 }
               : {}),
-            children: all
+            children: articles
               .filter((a) => a.parentId === guid)
               .map((a) => ({ guid: a.guid, title: a.title, icon: a.icon })),
           },
@@ -296,11 +304,6 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         if (plan.icon !== undefined) values.icon = plan.icon;
         if (plan.parentId !== undefined) values[PARENT_COLUMN] = plan.parentId;
         if (plan.blocks) values.content = serializeContent(plan.finalBlocks);
-        if (Object.keys(values).length === 0) {
-          throw new CopilotToolError(
-            "Nothing to change — send a title, an icon, a parentId or blocks.",
-          );
-        }
 
         await this.ucode.update(ctx.caller, TABLE, plan.guid as string, values);
         const name = plan.title ?? title(plan.current);
@@ -339,7 +342,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
       summarize: async (input, ctx) => {
         const guid = requireString(input.guid, "guid");
         const row = await this.requireArticle(ctx, guid);
-        const doomed = descendants(await this.fetchAll(ctx), guid);
+        const doomed = descendants(await this.wholeTree(ctx), guid);
         return {
           title: `Удалить статью «${title(row)}»?`,
           description:
@@ -361,7 +364,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
       execute: async (input, ctx) => {
         const guid = requireString(input.guid, "guid");
         const row = await this.requireArticle(ctx, guid);
-        const all = await this.fetchAll(ctx);
+        const all = await this.wholeTree(ctx);
         // Deepest first, parent last: a run that dies halfway leaves a subtree
         // that is still reachable from above. The other order strands children
         // under a parent that no longer exists, and the tree is built by walking
@@ -369,11 +372,19 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         const doomed = descendants(all, guid).sort((a, b) => b.depth - a.depth);
 
         let removed = 0;
-        for (const child of doomed) {
-          await this.ucode.remove(ctx.caller, TABLE, child.guid);
-          removed++;
+        try {
+          for (const child of doomed) {
+            await this.ucode.remove(ctx.caller, TABLE, child.guid);
+            removed++;
+          }
+          await this.ucode.remove(ctx.caller, TABLE, guid);
+        } catch (e) {
+          // A half-done cascade reported as a plain failure reads as "nothing
+          // happened", and the sub-articles it did remove are already gone.
+          throw new CopilotToolError(
+            `Deleted ${removed} of ${doomed.length} sub-article(s), then failed: ${reason(e)}. «${title(row)}» itself is still there, so what is left is still reachable. Say exactly this to the person; do not retry on your own.`,
+          );
         }
-        await this.ucode.remove(ctx.caller, TABLE, guid);
 
         return {
           ok: true,
@@ -397,7 +408,14 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
   ): Promise<WritePlan> {
     const guid = readString(input.guid);
     const title = readString(input.title);
-    const icon = readString(input.icon)?.slice(0, MAX_ICON_CHARS);
+    // By code point, not by string index: an emoji is several UTF-16 units and
+    // a family emoji is eleven, so slicing the raw string cuts one in half and
+    // stores a lone surrogate where the icon should be.
+    const rawIcon = readString(input.icon);
+    const icon =
+      rawIcon === undefined
+        ? undefined
+        : [...rawIcon].slice(0, MAX_ICON_CHARS).join("");
     const append = readBoolean(input.append) === true;
     const blocks =
       input.blocks === undefined ? undefined : normalizeBlocks(input.blocks, 0);
@@ -417,12 +435,26 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         "append only applies to an existing article — pass its guid, or leave append out to create one.",
       );
     }
+    // Caught here rather than in execute, or a guid with nothing beside it
+    // shows the person a confirmation card for a change that then refuses to
+    // happen — they approve, and the answer is an error.
+    if (
+      current &&
+      title === undefined &&
+      icon === undefined &&
+      parentId === undefined &&
+      blocks === undefined
+    ) {
+      throw new CopilotToolError(
+        "Nothing to change — send a title, an icon, a parentId or blocks.",
+      );
+    }
 
     // Fetched at most once per call, and only when something actually needs the
     // tree — a plain "rewrite this article" should not list the whole base.
     let cached: ArticleSummary[] | null = null;
     const tree = async (): Promise<ArticleSummary[]> =>
-      (cached ??= await this.fetchAll(ctx));
+      (cached ??= (await this.fetchAll(ctx)).articles);
 
     let parentBefore: string | null = null;
     let parentAfter: string | null = null;
@@ -494,6 +526,25 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
     };
   }
 
+  /**
+   * The tree, or nothing — for the one caller that cannot work with part of it.
+   *
+   * A cascading delete decides what to remove by walking down from the article,
+   * so a child that fell outside the fetched window is not deleted and is not
+   * reported: it keeps pointing at a parent that no longer exists, and the UI
+   * builds the tree from the roots down, so nobody ever sees it again. Refusing
+   * is the only honest option left once the base outgrows one fetch.
+   */
+  private async wholeTree(ctx: CopilotToolContext): Promise<ArticleSummary[]> {
+    const { articles, total } = await this.fetchAll(ctx);
+    if (articles.length < total) {
+      throw new CopilotToolError(
+        `The Knowledge Base has ${total} articles and the Copilot can only read ${articles.length} of them at once, so it cannot tell what is nested under this one. Deleting it here could leave sub-articles stranded — delete it from /knowledge-base instead.`,
+      );
+    }
+    return articles;
+  }
+
   /** The article, or an error the model can act on. Tenant check lives in getOne. */
   private async requireArticle(
     ctx: CopilotToolContext,
@@ -509,21 +560,14 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
   }
 
   /**
-   * Every article as a flat summary. Bodies are dropped here rather than in the
-   * query because the items API has no column projection — the rows arrive with
-   * their content either way.
-   *
-   * ponytail: stops at MAX_ARTICLES. A base that big needs a search endpoint,
-   * not a bigger loop.
-   */
-  /**
    * The id of the article just written, when the create reply did not carry one.
    *
-   * Matching on title and parent is enough because that pair is what the person
-   * asked for a moment ago; the newest match wins, so a company that genuinely
-   * keeps two articles of the same name under one parent still gets the one we
-   * added. Returning null here is not a failure to create — it is a failure to
-   * confirm, and the caller says so in those words.
+   * Only an unambiguous match counts. Two articles of the same title under the
+   * same parent cannot be told apart here: the list arrives in whatever order
+   * the backend chooses, so picking one of them is a coin toss, and the wrong
+   * guid is worse than none — it links to the wrong page and the next edit
+   * rewrites an article nobody asked about. Returning null is not a failure to
+   * create, it is a failure to confirm, and the caller says so in those words.
    */
   private async findJustCreated(
     ctx: CopilotToolContext,
@@ -532,11 +576,11 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
   ): Promise<string | null> {
     if (!articleTitle) return null;
     try {
-      const all = await this.fetchAll(ctx);
-      const matches = all.filter(
+      const { articles } = await this.fetchAll(ctx);
+      const matches = articles.filter(
         (a) => a.title === articleTitle && a.parentId === parentId,
       );
-      return matches.length > 0 ? matches[matches.length - 1].guid : null;
+      return matches.length === 1 ? matches[0].guid : null;
     } catch {
       // The lookup is a second chance, not the answer; its own failure must not
       // replace the more useful message the caller is about to write.
@@ -544,14 +588,31 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
     }
   }
 
-  private async fetchAll(ctx: CopilotToolContext): Promise<ArticleSummary[]> {
+  /**
+   * Every article as a flat summary, with the real total beside it. Bodies are
+   * dropped here rather than in the query because the items API has no column
+   * projection — the rows arrive with their content either way.
+   *
+   * `total` is what the backend says exists, which is not always what came
+   * back: the walk stops at MAX_ARTICLES. Callers have to compare the two,
+   * because every one of them means something different by a partial tree — a
+   * listing can say so, a cascading delete cannot proceed at all.
+   *
+   * ponytail: no search endpoint. A base past this size needs one; a bigger
+   * loop here would just move the cliff.
+   */
+  private async fetchAll(
+    ctx: CopilotToolContext,
+  ): Promise<{ articles: ArticleSummary[]; total: number }> {
     const out: ArticleSummary[] = [];
+    let total = 0;
     let offset = 0;
     for (;;) {
       const page = await this.ucode.list(ctx.caller, TABLE, {
         limit: PAGE_SIZE,
         offset,
       });
+      total = Math.max(total, page.count);
       for (const row of page.response) {
         const guid = readString(row.guid);
         if (!guid) continue;
@@ -571,7 +632,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         break;
       }
     }
-    return out;
+    return { articles: out, total: Math.max(total, out.length) };
   }
 }
 
@@ -862,6 +923,9 @@ const descendants = (
   }
   return out;
 };
+
+const reason = (e: unknown): string =>
+  e instanceof Error ? e.message : String(e);
 
 const title = (row: UcodeItem): string =>
   readString(row.title) ?? "Без названия";

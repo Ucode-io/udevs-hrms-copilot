@@ -326,4 +326,110 @@ describe("kb_write_article when the create reply carries no id", () => {
       toolNamed(tools, "kb_write_article").execute({ title: "Пропавшая", blocks: [] }, ctx),
     ).rejects.toThrow(/duplicate/);
   });
+
+  it("refuses to guess which of two same-titled siblings it just wrote", async () => {
+    // The list arrives in whatever order the backend picked, so one of these is
+    // the article we made and nothing here can say which. A guess that lands on
+    // the older one links to the wrong page and the next edit rewrites it.
+    const tools = stubWithout([
+      ...ARTICLES,
+      { guid: "dup-1", knowledge_base_articles_id: ROOT, title: "Онбординг", icon: "📘", content: "[]" },
+      { guid: "dup-2", knowledge_base_articles_id: ROOT, title: "Онбординг", icon: "📘", content: "[]" },
+    ]);
+
+    await expect(
+      toolNamed(tools, "kb_write_article").execute(
+        { title: "Онбординг", parentId: ROOT, blocks: [] },
+        ctx,
+      ),
+    ).rejects.toThrow(/probably created/);
+  });
+});
+
+describe("kb_write_article: input the card should never be built for", () => {
+  it("refuses a guid with nothing to change, before the card exists", async () => {
+    const { tools } = stub();
+    const write = toolNamed(tools, "kb_write_article");
+
+    // summarize is what builds the confirmation card, so this is the assertion
+    // that matters: the person is never asked to approve a no-op.
+    await expect(write.summarize?.({ guid: CHILD }, ctx)).rejects.toThrow(
+      /Nothing to change/,
+    );
+  });
+
+  it("keeps a multi-codepoint emoji whole", async () => {
+    const { tools, creates } = stub();
+
+    await toolNamed(tools, "kb_write_article").execute(
+      { title: "Семья", icon: "👨‍👩‍👧‍👦", blocks: [] },
+      ctx,
+    );
+
+    // Eleven UTF-16 units: a raw .slice() would have stored half a surrogate.
+    expect(creates[0].icon).toBe("👨‍👩‍👧‍👦");
+  });
+});
+
+describe("kb_delete_article: when the whole tree is not in reach", () => {
+  /** A base bigger than one walk: the backend says 500, the walk stops at 300. */
+  const hugeBase = (): CopilotTool[] => {
+    const client = new UcodeClient(config);
+    const rows: UcodeItem[] = Array.from({ length: 300 }, (_, i) => ({
+      guid: `art-${i}`,
+      knowledge_base_articles_id: null,
+      title: `Статья ${i}`,
+      icon: "📄",
+      content: "[]",
+    }));
+    jest.spyOn(client, "list").mockImplementation(async (_c, _t, query) => ({
+      count: 500,
+      response: rows.slice(query.offset ?? 0, (query.offset ?? 0) + 100),
+    }));
+    jest
+      .spyOn(client, "getOne")
+      .mockImplementation(async (_c, _t, guid) => rows.find((a) => a.guid === guid) ?? null);
+    jest.spyOn(client, "remove").mockResolvedValue(undefined);
+    return new CopilotKnowledgeTools(client).getTools();
+  };
+
+  it("refuses rather than stranding the sub-articles it cannot see", async () => {
+    await expect(
+      toolNamed(hugeBase(), "kb_delete_article").execute({ guid: "art-1" }, ctx),
+    ).rejects.toThrow(/cannot tell what is nested/);
+  });
+
+  it("reports the real total instead of the number it managed to list", async () => {
+    const result = await toolNamed(hugeBase(), "kb_list_articles").execute({}, ctx);
+    const data = result.data as Record<string, unknown>;
+
+    expect(data.count).toBe(500);
+    expect(data.listed).toBe(300);
+    expect(data.partial).toContain("300 of 500");
+  });
+});
+
+describe("kb_delete_article: a cascade that dies halfway", () => {
+  it("says how many sub-articles are already gone", async () => {
+    const client = new UcodeClient(config);
+    jest.spyOn(client, "list").mockImplementation(async (_c, _t, query) =>
+      (query.offset ?? 0) === 0
+        ? { count: ARTICLES.length, response: ARTICLES }
+        : { count: ARTICLES.length, response: [] },
+    );
+    jest
+      .spyOn(client, "getOne")
+      .mockImplementation(async (_c, _t, guid) => ARTICLES.find((a) => a.guid === guid) ?? null);
+    // The grandchild goes; the child refuses.
+    jest.spyOn(client, "remove").mockImplementation(async (_c, _t, guid) => {
+      if (guid === CHILD) throw new Error("row is referenced elsewhere");
+    });
+
+    await expect(
+      new CopilotKnowledgeTools(client)
+        .getTools()
+        .find((t) => t.name === "kb_delete_article")!
+        .execute({ guid: ROOT }, ctx),
+    ).rejects.toThrow(/Deleted 1 of 2 sub-article\(s\), then failed/);
+  });
 });
