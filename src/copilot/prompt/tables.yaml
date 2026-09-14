@@ -82,6 +82,19 @@ tables:
         For a month or period summary prefer run_report("attendance") — it
         returns the same figures the Reports page shows, already reconciled.
         Aggregate this table directly only for a cut the report does not offer.
+      - >-
+        For ONE day — "кто опоздал вчера", "кто сегодня отсутствует" — use
+        run_report("daily_status"), never this table. Lateness is not something
+        you can filter for here: it is 'late' in action_status OR a non-zero
+        delay_time, delay_time is TEXT shaped "ЧЧ:ММ" so it cannot be compared
+        as a number, one employee has several rows per day from different
+        sources of which only the highest-priority one counts, and rows whose
+        status contains 'rejected' do not count at all. A filtered list_items
+        gets every one of those wrong.
+      - >-
+        status, action_status and source_type are ARRAY columns. Filter them
+        with eq and a single value (the compiler wraps it) or with in and a
+        list.
 
   - slug: absences
     label: Отсутствия
@@ -165,6 +178,27 @@ reports:
       this report is the only way to see them. It takes no parameters and always
       returns the whole board.
     params: []
+
+  - name: daily_status
+    method: get_daily_status
+    description: >-
+      Where every employee stood on ONE calendar day, split into five lists:
+      late, on time, absent, away on an approved absence, and working remotely.
+      This is the ONLY correct answer to a question about a single day — it
+      applies the same rules the Reports pages do (the dominant record per
+      person per day, rejected records dropped, late time parsed out of the
+      "ЧЧ:ММ" delay field), none of which a filter on the attendance table can
+      express. Pass `bucket` to show one of the lists; omit it for the counts
+      alone.
+    params:
+      - name: date
+        description: The day as YYYY-MM-DD. Required.
+        required: true
+      - name: bucket
+        description: >-
+          Which list to put on screen — late, on_time, absent,
+          on_absence_policy or remote. Omit to show only the five counts.
+        required: false
 
   - name: attendance_table
     method: get_attendance_table

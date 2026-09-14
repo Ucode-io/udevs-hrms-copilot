@@ -58,6 +58,17 @@ export class CopilotReportTools implements CopilotToolGroup {
             description:
               "Month as YYYY-MM. Omit to get the report's own default month.",
           },
+          date: {
+            type: "string",
+            description:
+              "One day as YYYY-MM-DD. Required by daily_status and ignored by every other report.",
+          },
+          bucket: {
+            type: "string",
+            enum: [...DAILY_BUCKETS],
+            description:
+              "daily_status only: which of the five lists to put on screen. Omit to show the counts alone — do that when the question is about the shape of the day rather than about who is in one of the lists.",
+          },
           search: {
             type: "string",
             description: "Narrow the per-employee rows to a name (attendance_table only).",
@@ -80,18 +91,47 @@ export class CopilotReportTools implements CopilotToolGroup {
         }
 
         const params: Record<string, unknown> = {};
-        const month = entry.name === "tasks" ? undefined : readString(input.month);
-        if (month) {
-          if (!/^\d{4}-\d{2}$/.test(month)) {
-            throw new CopilotToolError(`month must look like 2026-08, got "${month}".`);
+        switch (entry.name) {
+          // Takes nothing and always returns the whole board.
+          case "tasks":
+            break;
+
+          case "daily_status": {
+            const date = readString(input.date);
+            if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+              throw new CopilotToolError(
+                `daily_status needs a date like 2026-09-13, got "${date ?? "nothing"}".`,
+              );
+            }
+            params.date = date;
+            // Checked here rather than at render time, so a bad bucket costs a
+            // correction instead of a pointless call to the gateway first.
+            const bucket = readString(input.bucket);
+            if (bucket && !BUCKETS[bucket]) {
+              throw new CopilotToolError(
+                `Unknown bucket "${bucket}". Use one of: ${DAILY_BUCKETS.join(", ")}.`,
+              );
+            }
+            break;
           }
-          params.month = month;
-        }
-        const search = entry.name === "tasks" ? undefined : readString(input.search);
-        if (search) params.search = search;
-        if (entry.name === "attendance_table") {
-          params.page = 1;
-          params.limit = 50;
+
+          default: {
+            const month = readString(input.month);
+            if (month) {
+              if (!/^\d{4}-\d{2}$/.test(month)) {
+                throw new CopilotToolError(
+                  `month must look like 2026-08, got "${month}".`,
+                );
+              }
+              params.month = month;
+            }
+            const search = readString(input.search);
+            if (search) params.search = search;
+            if (entry.name === "attendance_table") {
+              params.page = 1;
+              params.limit = 50;
+            }
+          }
         }
 
         const raw = await this.ucode.invokeFunction(
@@ -108,7 +148,13 @@ export class CopilotReportTools implements CopilotToolGroup {
         }
 
         let rendered: CopilotToolResult;
-        if (entry.name === "tasks") {
+        if (entry.name === "daily_status") {
+          rendered = renderDailyStatus(
+            result,
+            readString(input.date) ?? "",
+            readString(input.bucket),
+          );
+        } else if (entry.name === "tasks") {
           // Statuses and priorities are ids on a task; their titles live in a
           // second method. Two calls beat showing someone a board of uuids.
           const directories = extractResult(
@@ -122,6 +168,9 @@ export class CopilotReportTools implements CopilotToolGroup {
           );
           rendered = renderTasks(result, directories);
         } else {
+          // From `params`, not from the input again: this is the month that was
+          // actually asked for, already validated.
+          const month = readString(params.month);
           rendered =
             entry.name === "attendance"
               ? renderAttendance(result, month)
@@ -241,6 +290,63 @@ const renderAttendance = (
     },
     kpis,
     ...(rendered.length > 0 ? { charts: rendered } : {}),
+  };
+};
+
+/**
+ * One day, split the way the day actually splits.
+ *
+ * The five counts are the answer to "как прошёл вчерашний день"; one of the
+ * five lists is the answer to "кто опоздал". Which is why `bucket` is a
+ * parameter rather than five tables: a question about the late people should
+ * not leave four other lists on the screen.
+ */
+const renderDailyStatus = (
+  result: Record<string, unknown>,
+  date: string,
+  bucket: string | undefined,
+): CopilotToolResult => {
+  const counts = readRecord(result.counts) ?? {};
+  const subtitle = dayLabel(date);
+
+  const kpis: CopilotKpi[] = [
+    kpi("Опоздали", counts.late),
+    kpi("Вовремя", counts.on_time),
+    kpi("Отсутствуют", counts.absent),
+    kpi("В отпуске / на больничном", counts.on_absence_policy),
+    kpi("Удалённо", counts.remote),
+  ].filter((k): k is CopilotKpi => k !== null);
+
+  // Already validated by the caller, which is the only one there is.
+  const spec = bucket ? BUCKETS[bucket] : undefined;
+  const rows = spec ? asArray(result[spec.key]) : [];
+  const table: CopilotTable | null =
+    spec && rows.length > 0
+      ? {
+          id: randomUUID(),
+          title: spec.title,
+          subtitle,
+          columns: spec.columns,
+          rows: rows.map(spec.row),
+        }
+      : null;
+
+  return {
+    ok: true,
+    summary: `${date}: ${Number(counts.late ?? 0)} late, ${Number(counts.absent ?? 0)} absent of ${Number(counts.total ?? 0)}`,
+    data: {
+      date,
+      counts,
+      ...(spec ? { bucket: spec.key, listed: rows.length } : {}),
+      ...(table ? { tableRendered: table.title } : {}),
+      note: table
+        ? "The counts are on screen as cards and the list as a table. Answer the question in one sentence — usually how many, and the one name worth singling out. Do not read the list back."
+        : spec
+          ? `Nobody is in the "${spec.title}" list for this day. Say so in one sentence; the counts are on screen.`
+          : "Only the counts are on screen. If the person asked who is in one of these groups rather than how many, call this again with the matching bucket.",
+    },
+    kpis,
+    ...(table ? { tables: [table] } : {}),
   };
 };
 
@@ -387,6 +493,104 @@ const renderTasks = (
   };
 };
 
+// ─── daily_status buckets ───────────────────────────────────────────────────
+
+type DailyRow = Record<string, string | number | null>;
+
+interface BucketSpec {
+  /** Key on the gateway response holding this list. */
+  key: string;
+  title: string;
+  columns: Array<{ key: string; label: string }>;
+  row: (r: Record<string, unknown>) => DailyRow;
+}
+
+const person = (r: Record<string, unknown>): DailyRow => ({
+  employee: readString(r.full_name) ?? "—",
+  department: readString(r.department_title) ?? "—",
+});
+
+const BUCKETS: Record<string, BucketSpec> = {
+  late: {
+    key: "late",
+    title: "Опоздавшие",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Пришёл" },
+      { key: "delay", label: "Опоздание" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? "—",
+      delay: readString(r.delay_time) ?? "—",
+    }),
+  },
+  on_time: {
+    key: "on_time",
+    title: "Пришли вовремя",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Пришёл" },
+      { key: "check_out", label: "Ушёл" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? "—",
+      check_out: readString(r.check_out_time) ?? "—",
+    }),
+  },
+  absent: {
+    key: "absent",
+    title: "Отсутствуют",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "reason", label: "Причина" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      // The gateway's two reasons say different things: one is a record saying
+      // the person was away, the other is the absence of any record at all.
+      reason:
+        readString(r.reason) === "marked_absent"
+          ? "Отмечен отсутствующим"
+          : "Нет отметки прихода",
+    }),
+  },
+  on_absence_policy: {
+    key: "on_absence_policy",
+    title: "В отпуске / на больничном",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "policy", label: "Тип" },
+      { key: "until", label: "По" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      policy: readString(r.policy_title) ?? "—",
+      until: readString(r.absence_date_to)?.slice(0, 10) ?? "—",
+    }),
+  },
+  remote: {
+    key: "remote",
+    title: "Работают удалённо",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Отметился" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? (r.checked_in ? "да" : "—"),
+    }),
+  },
+};
+
+const DAILY_BUCKETS = Object.keys(BUCKETS);
+
 const asArray = (value: unknown): Array<Record<string, unknown>> =>
   (Array.isArray(value) ? value : [])
     .map((item) => readRecord(item))
@@ -449,6 +653,18 @@ const monthLabel = (month: string): string => {
   const name = MONTHS[Number(m[2]) - 1];
   return name ? `${name} ${m[1]}` : month;
 };
+
+/** "2026-09-13" reads as a machine key; "13 сентября 2026" reads as a day. */
+const dayLabel = (date: string): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const name = m ? MONTHS_GENITIVE[Number(m[2]) - 1] : undefined;
+  return m && name ? `${Number(m[3])} ${name} ${m[1]}` : date;
+};
+
+const MONTHS_GENITIVE = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
 
 const kpi = (label: string, value: unknown): CopilotKpi | null =>
   value === undefined || value === null
