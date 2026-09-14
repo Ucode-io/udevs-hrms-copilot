@@ -18,6 +18,7 @@ import type {
   CopilotConversationDetail,
   CopilotConversationSummary,
   CopilotExecutedAction,
+  CopilotLink,
   CopilotProposedAction,
   CopilotStopReason,
   CopilotStreamEvent,
@@ -336,8 +337,23 @@ export class CopilotService {
 
     let inputTokens = 0;
     let outputTokens = 0;
-    /** Whether any text has been streamed for this message yet. */
-    let wroteText = false;
+    /**
+     * The last result to carry rows or figures, and nothing before it. One
+     * question leaves one answer on screen, not the trail of steps it took to
+     * get there — three tables where two were a lookup is the person reading
+     * our working out instead of their answer.
+     */
+    let figures: Drawn | null = null;
+    /**
+     * Buttons, which do not follow that rule. A link is one line, and the one
+     * the model offers alongside a table — "открыть карточку сотрудника" — is
+     * part of the answer rather than a step towards it, so it must not be
+     * displaced by the table it sits under.
+     */
+    const buttons: Drawn[] = [];
+    /** Every href already offered, so the same page is never offered twice. */
+    const offered = new Set<string>();
+    const drawn = (): Drawn[] => (figures ? [figures, ...buttons] : buttons);
 
     yield {
       type: "message_start",
@@ -355,6 +371,7 @@ export class CopilotService {
           this.timedOut(
             `loop budget of ${LOOP_DEADLINE_MS}ms spent after ${turn} turn(s)`,
           ),
+          drawn(),
         );
         return;
       }
@@ -363,10 +380,6 @@ export class CopilotService {
       const startedAt = Date.now();
       const { signal, cancel } = turnSignal(budget);
       let final: Anthropic.Message;
-      // Snapshot, not the live flag: the live one flips on this turn's first
-      // delta, and testing it per delta would break a word in half.
-      const hadTextBefore = wroteText;
-      let openedParagraph = false;
 
       try {
         const stream = anthropic.messages.stream(
@@ -379,31 +392,25 @@ export class CopilotService {
             // us tuning a token budget; effort is the one dial we do set.
             thinking: { type: "adaptive" },
             output_config: { effort: this.config.effort },
-            // The loop handles one tool per turn, so parallel calls would leave
-            // unanswered tool_use blocks in the thread.
-            tool_choice: { type: "auto", disable_parallel_tool_use: true },
+            // The last turn is reserved for the answer. Without it a question
+            // that took a call too many ended as "не смог собрать ответ" — the
+            // Copilot had the data and was cut off before it could say so.
+            // Changing tool_choice costs this one request its cached prefix,
+            // which is why it is the last turn and not every turn.
+            tool_choice:
+              turn === MAX_TURNS - 1
+                ? { type: "none" }
+                : // The loop handles one tool per turn, so parallel calls would
+                  // leave unanswered tool_use blocks in the thread.
+                  { type: "auto", disable_parallel_tool_use: true },
             messages: trimThread(thread),
           },
           { signal },
         );
-
-        for await (const ev of stream) {
-          if (
-            ev.type === "content_block_delta" &&
-            ev.delta.type === "text_delta"
-          ) {
-            // Text from a later turn continues the same on-screen message. The
-            // model writes each turn as its own paragraph and ends it without a
-            // trailing newline, so without this the sentences collide:
-            // "...похожая разбивка.Агрегация по отделам сейчас не выполняется".
-            if (hadTextBefore && !openedParagraph) {
-              openedParagraph = true;
-              yield { type: "text_delta", text: "\n\n" };
-            }
-            wroteText = true;
-            yield { type: "text_delta", text: ev.delta.text };
-          }
-        }
+        // Deliberately not iterated for deltas. A turn that ends in a tool call
+        // is the Copilot thinking out loud, and streaming that put "сейчас
+        // проверю опоздания" on screen next to three tables of working out. The
+        // person gets one answer, once, when there is one.
         final = await stream.finalMessage();
       } catch (e) {
         if (signal.aborted) {
@@ -412,15 +419,22 @@ export class CopilotService {
             inputTokens,
             outputTokens,
             this.timedOut(
-              `turn ${turn + 1} ran past its ${budget}ms stream budget (${Date.now() - startedAt}ms elapsed, ${wroteText ? "text had started" : "no text yet"})`,
+              `turn ${turn + 1} ran past its ${budget}ms stream budget (${Date.now() - startedAt}ms elapsed)`,
             ),
+            drawn(),
           );
           return;
         }
         const mapped = this.mapAnthropicError(e);
         if (!mapped) throw e;
         this.logger.warn(`Copilot stream failed: ${mapped.log}`);
-        yield* this.stop(conversation, inputTokens, outputTokens, mapped.event);
+        yield* this.stop(
+          conversation,
+          inputTokens,
+          outputTokens,
+          mapped.event,
+          drawn(),
+        );
         return;
       } finally {
         cancel();
@@ -439,24 +453,22 @@ export class CopilotService {
         ),
       });
 
-      if (final.stop_reason !== "tool_use") {
-        await this.store.save(conversation);
+      const toolUse = final.content.find(
+        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      );
+      if (final.stop_reason !== "tool_use" || !toolUse) {
+        yield* this.answer(conversation, final, drawn());
         yield { type: "usage", inputTokens, outputTokens };
         yield {
           type: "message_complete",
           messageId,
-          stopReason: mapStop(final.stop_reason),
+          // A tool_use stop with no tool_use block in it is a turn that ended,
+          // whatever the header says.
+          stopReason:
+            final.stop_reason === "tool_use"
+              ? "end_turn"
+              : mapStop(final.stop_reason),
         };
-        return;
-      }
-
-      const toolUse = final.content.find(
-        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-      );
-      if (!toolUse) {
-        await this.store.save(conversation);
-        yield { type: "usage", inputTokens, outputTokens };
-        yield { type: "message_complete", messageId, stopReason: "end_turn" };
         return;
       }
 
@@ -490,6 +502,9 @@ export class CopilotService {
           ctx,
         );
         conversation.pendingAction = action;
+        // Before the card, not after the answer: this turn ends here, and the
+        // rows the change was worked out from are what makes the card readable.
+        yield* this.flush(conversation, drawn());
         await this.store.save(conversation);
         await this.store.audit(ctx.caller, {
           conversationId: conversation.id,
@@ -538,16 +553,52 @@ export class CopilotService {
         };
       }
 
-      const drawn = this.storeArtifacts(conversation, toolUse.id, result);
-      yield* this.emitArtifacts(drawn);
+      // Held, not drawn. Only the last result with figures in it reaches the
+      // person, so the lookups on the way to the answer stay off the screen
+      // even when the model forgets to say they were lookups.
+      if (hasFigures(result)) {
+        figures = { toolUseId: toolUse.id, result };
+      } else {
+        // An article read twice — after a write that failed validation, say —
+        // is one button, not two identical ones. Buttons accumulate instead of
+        // last-wins, so nothing else would ever drop the repeat.
+        const links = freshLinks(result.links, offered);
+        if (links.length > 0) {
+          buttons.push({
+            toolUseId: toolUse.id,
+            result: { ...result, links },
+          });
+        }
+      }
 
       thread.push(this.toolResult(toolUse.id, result, !result.ok));
       await this.store.save(conversation);
     }
 
+    // Unreachable while the last turn runs with tool_choice "none": that turn
+    // cannot ask for a tool, so it always leaves through answer() above. Kept
+    // so that the loop still terminates the stream if that ever changes — a
+    // generator that ends silently leaves the panel spinning forever.
+    yield* this.flush(conversation, drawn());
     await this.store.save(conversation);
     yield { type: "usage", inputTokens, outputTokens };
     yield { type: "message_complete", messageId, stopReason: "max_turns" };
+  }
+
+  /** The finished reply: what the model wrote, then the one result it drew. */
+  private async *answer(
+    conversation: Conversation,
+    final: Anthropic.Message,
+    drawn: Drawn[],
+  ): AsyncGenerator<CopilotStreamEvent> {
+    const text = final.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n\n")
+      .trim();
+    if (text) yield { type: "text_delta", text };
+    yield* this.flush(conversation, drawn);
+    await this.store.save(conversation);
   }
 
   /** Terminal exit for an interrupted turn: persist, meter, then report. */
@@ -556,7 +607,11 @@ export class CopilotService {
     inputTokens: number,
     outputTokens: number,
     error: CopilotStreamEvent,
+    drawn: Drawn[] = [],
   ): AsyncGenerator<CopilotStreamEvent> {
+    // Whatever was fetched before the interruption still answers something, and
+    // it is all the person gets — an error card on its own tells them nothing.
+    yield* this.flush(conversation, drawn);
     await this.store.save(conversation);
     yield { type: "usage", inputTokens, outputTokens };
     yield error;
@@ -565,22 +620,27 @@ export class CopilotService {
   // ─── Artifacts ────────────────────────────────────────────────────────────
 
   /**
-   * Stashes a tool's Artifacts under its tool_use id — deliberately outside the
-   * Thread, so they are never replayed into the model — and returns them for
-   * live emission.
+   * Puts the held Artifacts on screen and stashes them under their tool_use id
+   * — deliberately outside the Thread, so they are never replayed into the
+   * model. Storing happens here rather than when the tool ran, so that a reload
+   * of the Conversation shows exactly what the live stream showed.
    */
+  private async *flush(
+    conversation: Conversation,
+    drawn: Drawn[],
+  ): AsyncGenerator<CopilotStreamEvent> {
+    for (const { toolUseId, result } of drawn) {
+      this.storeArtifacts(conversation, toolUseId, result);
+      yield* this.emitArtifacts(result);
+    }
+  }
+
   private storeArtifacts(
     conversation: Conversation,
     toolUseId: string,
     result: CopilotToolResult,
   ): CopilotToolResult {
-    const has =
-      (result.charts?.length ?? 0) > 0 ||
-      (result.kpis?.length ?? 0) > 0 ||
-      (result.tables?.length ?? 0) > 0 ||
-      (result.links?.length ?? 0) > 0;
-
-    if (has) {
+    if (hasArtifacts(result)) {
       conversation.artifacts = {
         ...conversation.artifacts,
         [toolUseId]: {
@@ -728,6 +788,36 @@ export class CopilotService {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** A tool result whose Artifacts the person will see, once that is known. */
+type Drawn = { toolUseId: string; result: CopilotToolResult };
+
+/** Rows and numbers: what takes up a screen, and so what last-wins applies to. */
+const hasFigures = (result: CopilotToolResult): boolean =>
+  (result.charts?.length ?? 0) > 0 ||
+  (result.kpis?.length ?? 0) > 0 ||
+  (result.tables?.length ?? 0) > 0;
+
+const hasArtifacts = (result: CopilotToolResult): boolean =>
+  hasFigures(result) || (result.links?.length ?? 0) > 0;
+
+/**
+ * The links in `result` that have not been offered yet, recording them as
+ * offered. Keyed on href rather than on the link's id, which is a fresh uuid
+ * per call and so never repeats even when the destination does.
+ */
+export const freshLinks = (
+  links: CopilotLink[] | undefined,
+  offered: Set<string>,
+): CopilotLink[] => {
+  const out: CopilotLink[] = [];
+  for (const link of links ?? []) {
+    if (offered.has(link.href)) continue;
+    offered.add(link.href);
+    out.push(link);
+  }
+  return out;
+};
 
 const toProposed = (action: CopilotPendingAction): CopilotProposedAction => ({
   actionId: action.actionId,

@@ -302,6 +302,11 @@ export class CopilotDataTools implements CopilotToolGroup {
                 ),
               );
 
+        // Nothing matched, so there is nothing to draw. A table of headings over
+        // no rows is a card that says "ничего не найдено" in the most expensive
+        // way available; the sentence the model writes says it better.
+        const drawTable = !lookupOnly && items.length > 0;
+
         const artifact: CopilotTable = {
           id: randomUUID(),
           title: readString(input.title) ?? this.catalog.table(table)?.label ?? table,
@@ -330,12 +335,14 @@ export class CopilotDataTools implements CopilotToolGroup {
                     : `Only the first ${quotable.length} of ${result.response.length} rows are quoted here; the person sees all of them.`,
                 }
               : {}),
-            ...(lookupOnly ? {} : { tableRendered: artifact.title }),
-            note: lookupOnly
-              ? "Nothing was drawn — these rows are for you, not for the person. Answer from them, and make a separate call for anything they should actually see."
-              : "The rows are on screen as a table. State the count and at most one thing worth noticing. Do not retype rows, and do not mention the table.",
+            ...(drawTable ? { tableRendered: artifact.title } : {}),
+            note: drawTable
+              ? "The rows are on screen as a table. State the count and at most one thing worth noticing. Do not retype rows, and do not mention the table."
+              : items.length === 0
+                ? "Nothing matched, so nothing was drawn. Say so in one sentence — and if the filters could be wrong, say which one you would relax rather than trying three more queries."
+                : "Nothing was drawn — these rows are for you, not for the person. Answer from them, and make a separate call for anything they should actually see.",
           },
-          ...(lookupOnly ? {} : { tables: [artifact] }),
+          ...(drawTable ? { tables: [artifact] } : {}),
         };
       },
     };
@@ -625,6 +632,18 @@ export class CopilotDataTools implements CopilotToolGroup {
       if (picked.length > 0) return picked.slice(0, MAX_TABLE_COLUMNS);
     }
 
+    /**
+     * Whom or what the row is about, which on most tables is a relation rather
+     * than a column of its own. An attendance row is a check-in time, a delay
+     * and a status — the employee lives on user_base_id_data — so a table built
+     * from the schema order alone came out as three columns of times that
+     * nobody could attribute to anyone.
+     */
+    const named = fields
+      .filter((f) => !HIDDEN_COLUMNS.has(f.slug) && isIdColumn(f.slug))
+      .slice(0, 2)
+      .map((f) => `${f.slug}_data`);
+
     const preferred =
       table === "user_base"
         ? [
@@ -636,16 +655,21 @@ export class CopilotDataTools implements CopilotToolGroup {
             "date_hire",
             "phone",
           ]
-        : ["title", "name", "date", "created_at"];
+        : [...named, "title", "name", "date", "created_at"];
 
     const picked = preferred
       .map((c) => resolve(c))
       .filter((f): f is FieldDef => f !== undefined);
-    if (picked.length >= 3) return picked.slice(0, MAX_TABLE_COLUMNS);
-
-    return fields
-      .filter((f) => !HIDDEN_COLUMNS.has(f.slug) && !f.slug.endsWith("_data"))
-      .slice(0, MAX_TABLE_COLUMNS);
+    // An id whose name is already picked would take one of five slots and then
+    // be dropped from the table, because guids are never shown — so the person
+    // would get four columns where five were available.
+    const rest = fields.filter(
+      (f) =>
+        !HIDDEN_COLUMNS.has(f.slug) &&
+        !f.slug.endsWith("_data") &&
+        !picked.some((p) => p.slug === f.slug || p.slug === `${f.slug}_data`),
+    );
+    return [...picked, ...rest].slice(0, MAX_TABLE_COLUMNS);
   }
 
   /**

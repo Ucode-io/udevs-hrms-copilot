@@ -55,10 +55,16 @@ export const projectThread = (
       messages.push(assistant);
     }
 
+    // Text written alongside a tool call is the model narrating its next step,
+    // and the live stream never sends it. Replaying it would put sentences in a
+    // reopened conversation that were not there when it was live.
+    const narration = blocks.some((b) => b.type === "tool_use");
+
     for (const block of blocks) {
       if (block.type === "text") {
-        // The live stream separates turns with a blank line for the same reason:
-        // without it the last sentence of one turn runs into the first of the next.
+        if (narration) continue;
+        // Turns are separated by a blank line: without it the last sentence of
+        // one runs into the first of the next.
         assistant.content = assistant.content
           ? `${assistant.content}\n\n${block.text}`
           : block.text;

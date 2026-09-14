@@ -40,6 +40,28 @@ const toolResult = (
 });
 
 describe("projectThread", () => {
+  it("leaves out what the model wrote on its way to a tool call", () => {
+    // The live stream never sends that text, so replaying it would put
+    // sentences into a reopened conversation that were never in it.
+    const messages = projectThread(
+      conversation([
+        { role: "user", content: "Кто опоздал вчера?" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Сейчас проверю посещаемость." },
+            { type: "tool_use", id: "t1", name: "list_items", input: {} },
+          ],
+        },
+        toolResult("t1", { ok: true, summary: "", data: {} }),
+        { role: "assistant", content: [{ type: "text", text: "Никто не опоздал." }] },
+      ]),
+      riskOf,
+    );
+
+    expect(messages[1].content).toBe("Никто не опоздал.");
+  });
+
   it("turns a thread into one bubble per turn, without the machinery", () => {
     const messages = projectThread(
       conversation([
