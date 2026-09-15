@@ -651,6 +651,38 @@ describe("kb_search", () => {
     expect((globalThis.fetch as jest.Mock).mock.calls).toHaveLength(1);
   });
 
+  // The point of the button: "скинь прайс" is one search, not a megabyte of
+  // PDF read into the conversation so the tool has something to link to.
+  it("offers the matched file for download, from the search alone", async () => {
+    const result = await searchTool().execute({ query: "брон" }, ctx);
+
+    expect(result.links).toEqual([
+      expect.objectContaining({
+        label: "Скачать «price.csv»",
+        href: FILE_URL,
+        external: true,
+      }),
+    ]);
+  });
+
+  // The regression: «прайс» matches the title and «кортипан» the PDF, one term
+  // each, and the article's own haystack wins the tie — so the file lost its
+  // button in exactly the case people ask about most.
+  it("still offers the file when the snippet came from the article", async () => {
+    const result = await searchTool().execute({ query: "прайс" }, ctx);
+    const hit = (result.data as { results: Array<Record<string, unknown>> }).results[0];
+
+    expect(hit.where).toBe("статья");
+    expect(result.links).toEqual([
+      expect.objectContaining({ label: "Скачать «price.csv»", href: FILE_URL }),
+    ]);
+  });
+
+  it("offers nothing to download when the hit was in the article itself", async () => {
+    const result = await searchTool().execute({ query: "руководител" }, ctx);
+    expect(result.links).toEqual([]);
+  });
+
   // Saying "nothing found" is only safe if the model knows how the matching
   // works — otherwise it reports an absence that is really a word form.
   it("tells the model to retry with roots instead of declaring absence", async () => {

@@ -79,7 +79,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
     return {
       name: "kb_search",
       description:
-        "Search the Knowledge Base — article titles, article bodies, AND the text of the files uploaded into them (PDF, XLSX, CSV, TXT/MD). Use this FIRST for any question that might be written down somewhere, before kb_list_articles and before saying the Knowledge Base has nothing on a subject. Matching is by substring, so pass word ROOTS rather than full forms — «брон отпуск» finds «бронирование» and «отпуска», while «забронировать» finds neither. 2-5 short terms work better than a sentence. Snippets come back with the article guid; call kb_read_article for the full text, and kb_read_file when the answer is a figure inside a file — file text is extracted for finding, and a table's columns run together in it.",
+        "Search the Knowledge Base — article titles, article bodies, AND the text of the files uploaded into them (PDF, XLSX, CSV, TXT/MD). Use this FIRST for any question that might be written down somewhere, before kb_list_articles and before saying the Knowledge Base has nothing on a subject. Matching is by substring, so pass word ROOTS rather than full forms — «брон отпуск» finds «бронирование» and «отпуска», while «забронировать» finds neither. 2-5 short terms work better than a sentence. Snippets come back with the article guid; call kb_read_article for the full text, and kb_read_file when the answer is a figure inside a file — file text is extracted for finding, and a table's columns run together in it. A file this search matched is offered to the person as a download button on its own, so a request for the file itself needs nothing beyond this call.",
       risk: "read",
       inputSchema: {
         type: "object",
@@ -110,6 +110,12 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
           summary: hits.length
             ? `${hits.length} ${plural(hits.length, "совпадение", "совпадения", "совпадений")} по «${query}»`
             : `По «${query}» в базе знаний ничего не нашлось`,
+          // A file that answered the search is offered for download right here,
+          // so "скинь прайс" costs one search instead of reading a megabyte of
+          // PDF into the conversation to produce a button.
+          links: hits
+            .flatMap((hit) => hit.files ?? [])
+            .map((file) => fileLink(file.name, file.url)),
           data: {
             terms,
             searched: `${articles.length} ${plural(articles.length, "статья", "статьи", "статей")}, ${texts.size} ${plural(texts.size, "файл", "файла", "файлов")}`,
@@ -315,7 +321,11 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
           // these bytes after the turn instead of re-sending them for the rest
           // of the conversation. The file is still in the base to fetch again.
           blocks: await fileBlocks(file.name, mediaType, buffer, "knowledge-base"),
-          links: [articleLink(guid, title(row))],
+          // The file first: when the answer came out of it, that is the thing
+          // the person reaches for. The article behind it is offered too, and
+          // drops out on its own if a read earlier in the turn already offered
+          // it — buttons are deduplicated by href.
+          links: [fileLink(file.name, file.url), articleLink(guid, title(row))],
         };
       },
     };
@@ -1064,6 +1074,8 @@ const MIN_TERM_CHARS = 3;
 const MAX_TERMS = 8;
 const MAX_HITS = 5;
 const SNIPPET_CHARS = 280;
+/** Download buttons one matched article may contribute. */
+const MAX_FILES_PER_HIT = 3;
 /** Files pulled down for one search. A base past this needs a real index. */
 const MAX_INDEXED_FILES = 25;
 /** Files fetched at once — the CDN is not the thing to be clever with. */
@@ -1078,6 +1090,15 @@ interface SearchHit {
   /** «статья» or the name of the file the snippet came out of. */
   where: string;
   snippet: string;
+  /**
+   * The article's uploads — what kb_read_file takes, and what the person gets a
+   * download button for without the file ever being read into the conversation.
+   *
+   * Every file of a matched article, not only a file whose text matched: asked
+   * for «прайс», the person wants the PDF hanging off the article called
+   * «Прайс», and nothing says the word «прайс» has to appear inside it.
+   */
+  files?: Array<{ name: string; url: string }>;
 }
 
 /**
@@ -1149,11 +1170,16 @@ const rank = (
 
   for (const article of articles) {
     // The title goes in front of the body so a title match wins the snippet.
-    const haystacks: Array<{ where: string; text: string }> = [
+    const haystacks: Array<{
+      where: string;
+      text: string;
+      file?: AttachedFile;
+    }> = [
       { where: "статья", text: `${article.title}\n${article.text}` },
       ...article.files.map((f) => ({
         where: `файл «${f.name}»`,
         text: indexed.get(f.url) ?? "",
+        file: f,
       })),
     ];
 
@@ -1176,7 +1202,20 @@ const rank = (
         snippet: snippet(text, folded, matched[0]),
       };
     }
-    if (best) hits.push(best);
+
+    if (best) {
+      // Attached after the snippet is settled, and independently of it: which
+      // haystack won says where the evidence was, not what the person can be
+      // handed. Only files on the company's storage — an arbitrary link an
+      // article happens to contain is not something to dress up as a download.
+      const files = article.files
+        .filter((f) => isCdnUrl(f.url))
+        .slice(0, MAX_FILES_PER_HIT);
+      if (files.length > 0) {
+        best.files = files.map((f) => ({ name: f.name, url: f.url }));
+      }
+      hits.push(best);
+    }
   }
 
   return hits
@@ -1383,6 +1422,28 @@ const articleLink = (guid: string, name: string): CopilotLink => ({
   label: name ? `Открыть «${name}»` : "Открыть статью",
   href: `/knowledge-base/articles/${encodeURIComponent(guid)}`,
   kind: "knowledge",
+});
+
+/**
+ * The file itself, to download from the chat.
+ *
+ * The href is the CDN link the article already carries, so the browser fetches
+ * it straight from storage — the bytes never travel through the Copilot a
+ * second time. `external` is what both clients key on to render an anchor that
+ * opens in a new tab; the mini-app shows external links and nothing else,
+ * because in-app hrefs are admin routes it does not have.
+ *
+ * `kind: "file"` is what tells a client this is not navigation: the admin panel
+ * draws navigation buttons only on the newest message, because an old one would
+ * send the person backwards — but a file stays worth downloading however far up
+ * the conversation it now sits.
+ */
+const fileLink = (name: string, url: string): CopilotLink => ({
+  id: randomUUID(),
+  label: `Скачать «${name}»`,
+  href: url,
+  external: true,
+  kind: "file",
 });
 
 /** 1 статья / 2 статьи / 5 статей. */
