@@ -1274,6 +1274,10 @@ const rank = (
     ];
 
     let best: SearchHit | null = null;
+    // Which side matched decides what is worth offering — see below.
+    let articleMatched = false;
+    const matchedFiles: AttachedFile[] = [];
+
     for (const hay of haystacks) {
       // Composed once here so the snippet and the offsets it is cut at come
       // from the same string — NFC is the one part of folding that changes a
@@ -1282,6 +1286,8 @@ const rank = (
       const folded = fold(text);
       const matched = terms.filter((t) => folded.includes(t));
       if (matched.length === 0) continue;
+      if (hay.file) matchedFiles.push(hay.file);
+      else articleMatched = true;
       if (best && best.matched.length >= matched.length) continue;
       best = {
         guid: article.guid,
@@ -1294,10 +1300,23 @@ const rank = (
     }
 
     if (best) {
-      // Attached after the snippet is settled, and independently of it: which
-      // haystack won says where the evidence was, not what the person can be
-      // handed.
-      const files = subtreeFiles(article, children);
+      // Attached after the snippet is settled, and independently of which
+      // haystack won — that says where the evidence was, not what the person
+      // can be handed.
+      //
+      // What is worth handing over depends on what matched. An article that
+      // matched on its own is *about* the subject, so everything filed under it
+      // belongs: «Аллерайз» means its own files plus «Инструкции» and
+      // «Презентации». An article that matched only through one of its files is
+      // not — «ПД файлы для группы офта» holds one file per drug, and a search
+      // for «Аллерайз» that hands over Новосалик, Вегтазон and Сетимед because
+      // they are filed next to it has answered a question nobody asked.
+      const files = articleMatched
+        ? subtreeFiles(article, children)
+        : matchedFiles
+            .filter((f) => isCdnUrl(f.url))
+            .slice(0, MAX_FILES_PER_HIT)
+            .map((f) => ({ name: f.name, url: f.url }));
       if (files.length > 0) best.files = files;
       hits.push(best);
     }

@@ -773,6 +773,48 @@ describe("kb_search: an article is its subtree", () => {
     expect(labels).toContain("Скачать «Presentation Allerayz MP rus.pptx»");
   });
 
+  // The regression the other way: «ПД файлы для группы офта» holds one file per
+  // drug, and it matches «Аллерайз» only because one of those files is named
+  // after it. Handing over its neighbours — Новосалик, Вегтазон, Сетимед —
+  // answers a question nobody asked.
+  it("offers only the file that matched when the article itself did not", async () => {
+    const PD = "dddddddd-0000-4000-8000-000000000004";
+    const client = new UcodeClient(config);
+    const corpus: UcodeItem[] = [
+      ...TREE,
+      {
+        guid: PD,
+        knowledge_base_articles_id: null,
+        title: "ПД файлы для группы офта",
+        icon: "📁",
+        content: JSON.stringify([
+          file("ПД файл Новосалик.docx"),
+          file("ПД Аллерайз узб вариант.docx"),
+          file("ПД файл Вегтазон.docx"),
+        ]),
+      },
+    ];
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, q) =>
+        (q.offset ?? 0) === 0
+          ? { count: corpus.length, response: corpus }
+          : { count: corpus.length, response: [] },
+      );
+
+    const result = await toolNamed(
+      new CopilotKnowledgeTools(client).getTools(),
+      "kb_search",
+    ).execute({ query: "аллерайз" }, ctx);
+    const labels = (result.links ?? []).map((l) => l.label);
+
+    expect(labels).toContain("Скачать «ПД Аллерайз узб вариант.docx»");
+    expect(labels).not.toContain("Скачать «ПД файл Новосалик.docx»");
+    expect(labels).not.toContain("Скачать «ПД файл Вегтазон.docx»");
+    // The article that really is about Аллерайз still brings its whole subtree.
+    expect(labels).toContain("Скачать «Instruction Allerayz rus.pdf»");
+  });
+
   it("says which sub-article a file came from", async () => {
     const hit = (
       (await tool().execute({ query: "аллерайз" }, ctx)).data as {
