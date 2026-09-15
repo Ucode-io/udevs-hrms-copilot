@@ -65,8 +65,10 @@ export const fileBlocks = async (
   rawName: string,
   mediaType: string,
   buffer: Buffer,
+  origin: FileOrigin = "upload",
 ): Promise<Anthropic.ContentBlockParam[]> => {
   const name = safeName(rawName);
+  const label = (text: string) => fileLabel(text, origin);
 
   if (buffer.byteLength === 0) return [note(name, "it arrived empty")];
   if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
@@ -129,15 +131,30 @@ export const fileBlocks = async (
 };
 
 /**
+ * Where a file came from, which decides how long its bytes are kept. An upload
+ * exists only inside the conversation; a Knowledge Base file can be fetched
+ * again at any time.
+ */
+export type FileOrigin = "upload" | "knowledge-base";
+
+/** The prefix that marks a file the Copilot can go and read a second time. */
+export const KB_LABEL_PREFIX = "[Файл из базы знаний: ";
+
+/**
  * Names the file in front of whatever carries it.
  *
  * Redundant for a document, which has a `title` — but an image block has no
  * field for a name, and this is what lets `compactAttachments` throw the bytes
- * away later without throwing away which file they were.
+ * away later without throwing away which file they were. The Knowledge Base
+ * wording is load-bearing for the same reason: it is how compaction tells a
+ * file it can refetch from one it cannot.
  */
-const label = (name: string): Anthropic.ContentBlockParam => ({
+const fileLabel = (
+  name: string,
+  origin: FileOrigin,
+): Anthropic.ContentBlockParam => ({
   type: "text",
-  text: `[Файл: ${name}]`,
+  text: origin === "knowledge-base" ? `${KB_LABEL_PREFIX}${name}]` : `[Файл: ${name}]`,
 });
 
 /** Plain text handed over as a document, so the filename travels with it. */
@@ -251,46 +268,70 @@ export const truncate = (text: string): string =>
 const DROPPED =
   "[Содержимое файла больше не хранится. Если оно снова нужно, попросите прислать файл ещё раз.]";
 
+/**
+ * The same stand-in for a file that can be had again — and it says how, because
+ * a model that reads "no longer stored" and stops there answers from a filename
+ * instead of from the file.
+ */
+const KB_DROPPED =
+  "[Содержимое файла больше не хранится. Оно в базе знаний: вызовите kb_read_file ещё раз, если ответ зависит от того, что внутри.]";
+
 const isAttachment = (block: Anthropic.ContentBlockParam): boolean =>
   block.type === "document" || block.type === "image";
 
 /**
- * The copy of a Thread that goes to storage: every attachment but the newest
- * loses its payload and keeps its name.
+ * The copy of a Thread that goes to storage, with the file bytes it no longer
+ * needs replaced by a sentence naming what was there.
  *
  * A stored Thread is written whole on every save — in ucode mode that is a
- * JSON.stringify of the lot into one column, on every turn — so a conversation
- * holding a 4 MB PDF would re-upload it for as long as the conversation lives.
- * This bounds a row at roughly one attachment however long the conversation
- * runs.
+ * JSON.stringify of the lot into one column, on every turn — and it is read
+ * back and re-sent to the model on every turn after that. So bytes left in it
+ * are not paid for once: they are paid for on every reply for as long as the
+ * conversation lives.
  *
- * The newest keeps its bytes on purpose: "а теперь возьми из того же файла
- * ещё и отделы" is a normal second question, and it has to still be able to
- * read the file. An older one becomes a stand-in rather than a hole, so the
- * model reading back a turn sees a question that had a file with it rather
- * than a question missing its object.
+ * The newest *upload* keeps its bytes on purpose: "а теперь возьми из того же
+ * файла ещё и отделы" is a normal second question, and the file exists nowhere
+ * else — the person would have to attach it again.
+ *
+ * A Knowledge Base file is the opposite case and always loses its bytes, even
+ * when it is the newest thing in the thread. It is still in the Knowledge Base,
+ * kb_read_file will fetch it again in a second, and the alternative is a price
+ * list riding along on every later reply about anything at all. Refetching when
+ * a question needs it beats carrying it when no question does.
  */
 export const compactAttachments = (
   thread: Anthropic.MessageParam[],
 ): Anthropic.MessageParam[] => {
-  let newest = -1;
+  // Most threads carry no file at all, and those come back untouched rather
+  // than rebuilt.
+  if (!thread.some(hasAttachment)) return thread;
+
+  let newestUpload = -1;
   thread.forEach((message, i) => {
-    if (Array.isArray(message.content) && message.content.some(isAttachment)) {
-      newest = i;
-    }
+    if (hasAttachment(message) && !fromKnowledgeBase(message)) newestUpload = i;
   });
-  if (newest < 0) return thread;
 
   return thread.map((message, i) => {
-    if (i === newest || !Array.isArray(message.content)) return message;
+    if (i === newestUpload || !Array.isArray(message.content)) return message;
     if (!message.content.some(isAttachment)) return message;
+    const standIn = fromKnowledgeBase(message) ? KB_DROPPED : DROPPED;
     return {
       ...message,
       content: message.content.map((block) =>
         isAttachment(block)
-          ? ({ type: "text", text: DROPPED } as Anthropic.ContentBlockParam)
+          ? ({ type: "text", text: standIn } as Anthropic.ContentBlockParam)
           : block,
       ),
     };
   });
 };
+
+const hasAttachment = (message: Anthropic.MessageParam): boolean =>
+  Array.isArray(message.content) && message.content.some(isAttachment);
+
+/** Told apart by the label `fileBlocks` wrote in front of the bytes. */
+const fromKnowledgeBase = (message: Anthropic.MessageParam): boolean =>
+  Array.isArray(message.content) &&
+  message.content.some(
+    (block) => block.type === "text" && block.text.startsWith(KB_LABEL_PREFIX),
+  );
