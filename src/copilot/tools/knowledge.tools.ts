@@ -222,6 +222,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
           data: {
             guid,
             title: title(row),
+            cite: cite(guid, title(row)),
             icon: readString(row.icon) ?? DEFAULT_ICON,
             parentId: readString(row[PARENT_COLUMN]) ?? null,
             blocks: kept,
@@ -1104,6 +1105,13 @@ interface SearchHit {
   guid: string;
   title: string;
   icon: string;
+  /**
+   * What to put in a reply that names this article, so the name itself takes
+   * the person to it. Handed over ready-made rather than as a format to follow:
+   * a link the model assembled slightly wrong renders as literal brackets in
+   * the chat, and nothing upstream would ever notice.
+   */
+  cite: string;
   /** Which terms were found, so the model can see what it actually matched. */
   matched: string[];
   /** «статья» or the name of the file the snippet came out of. */
@@ -1293,6 +1301,7 @@ const rank = (
         guid: article.guid,
         title: article.title,
         icon: article.icon,
+        cite: cite(article.guid, article.title),
         matched,
         where: hay.where,
         snippet: snippet(text, folded, matched[0]),
@@ -1549,6 +1558,17 @@ const fileLink = (name: string, url: string): CopilotLink => ({
   external: true,
   kind: "file",
 });
+
+/**
+ * An article named in a reply, as a link the clients turn into a route.
+ *
+ * `kb:` rather than a path because the two clients file the same article under
+ * different ones — /knowledge-base/articles/<guid> in the panel, /knowledge/<guid>
+ * in the mini-app — and the model should not be the place that knows which is
+ * reading.
+ */
+const cite = (guid: string, title: string): string =>
+  `[${title}](kb:${guid})`;
 
 /** First of each key, order kept — two hits can share a file from one subtree. */
 const uniqueBy = <T>(items: T[], key: (item: T) => string): T[] => {

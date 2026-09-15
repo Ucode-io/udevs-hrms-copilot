@@ -668,6 +668,19 @@ describe("kb_search", () => {
   // The regression: «прайс» matches the title and «кортипан» the PDF, one term
   // each, and the article's own haystack wins the tie — so the file lost its
   // button in exactly the case people ask about most.
+  // The name in the reply is the way back to the source, so the link has to be
+  // handed over whole: one the model assembled itself renders as literal
+  // brackets in the chat, and nothing upstream would notice.
+  it("hands over a ready link to the article", async () => {
+    const hits = (
+      (await searchTool().execute({ query: "прайс" }, ctx)).data as {
+        results: Array<Record<string, unknown>>;
+      }
+    ).results;
+
+    expect(hits[0].cite).toBe(`[Прайс](kb:${CORPUS[0].guid})`);
+  });
+
   it("still offers the file when the snippet came from the article", async () => {
     const result = await searchTool().execute({ query: "прайс" }, ctx);
     const hit = (result.data as { results: Array<Record<string, unknown>> }).results[0];
