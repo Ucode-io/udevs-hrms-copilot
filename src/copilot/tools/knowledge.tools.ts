@@ -1,7 +1,14 @@
 import { randomUUID } from "crypto";
 import { Injectable } from "@nestjs/common";
 import { UcodeClient } from "../../ucode/ucode.client";
-import { MAX_ATTACHMENT_BYTES, fileBlocks } from "../attachment";
+import { fileBlocks } from "../attachment";
+import {
+  CDN_HOST,
+  download,
+  indexedText,
+  isCdnUrl,
+  isIndexable,
+} from "./file-index";
 import type { UcodeItem } from "../../ucode/ucode.types";
 import type { CopilotFieldChange, CopilotLink } from "../types/copilot.types";
 import {
@@ -48,12 +55,89 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
 
   getTools(): CopilotTool[] {
     return [
+      this.search(),
       this.listArticles(),
       this.readArticle(),
       this.readFile(),
       this.writeArticle(),
       this.deleteArticle(),
     ];
+  }
+
+  // ─── kb_search ────────────────────────────────────────────────────────────
+
+  /**
+   * Finds where in the Knowledge Base a subject is written down — including
+   * inside the files uploaded into it.
+   *
+   * The tool the base was missing. kb_list_articles shows titles, so anything
+   * asked in words that are not in a title reads as absent: "как забронировать"
+   * against an article called «Прайс» whose PDF answers it on page one. A
+   * listing cannot find that, and nobody scrolls a tree to check.
+   */
+  private search(): CopilotTool {
+    return {
+      name: "kb_search",
+      description:
+        "Search the Knowledge Base — article titles, article bodies, AND the text of the files uploaded into them (PDF, XLSX, CSV, TXT/MD). Use this FIRST for any question that might be written down somewhere, before kb_list_articles and before saying the Knowledge Base has nothing on a subject. Matching is by substring, so pass word ROOTS rather than full forms — «брон отпуск» finds «бронирование» and «отпуска», while «забронировать» finds neither. 2-5 short terms work better than a sentence. Snippets come back with the article guid; call kb_read_article for the full text, and kb_read_file when the answer is a figure inside a file — file text is extracted for finding, and a table's columns run together in it.",
+      risk: "read",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Word roots to look for, separated by spaces. Terms shorter than 3 characters are ignored.",
+          },
+        },
+        required: ["query"],
+      },
+      execute: async (input, ctx) => {
+        const query = requireString(input.query, "query");
+        const terms = searchTerms(query);
+        if (terms.length === 0) {
+          throw new CopilotToolError(
+            `Nothing to search for in "${query}" — terms must be at least ${MIN_TERM_CHARS} characters.`,
+          );
+        }
+
+        const { articles, total } = await this.fetchAll(ctx);
+        const { texts, skipped } = await indexFiles(articles);
+        const hits = rank(articles, terms, texts);
+
+        return {
+          ok: true,
+          summary: hits.length
+            ? `${hits.length} ${plural(hits.length, "совпадение", "совпадения", "совпадений")} по «${query}»`
+            : `По «${query}» в базе знаний ничего не нашлось`,
+          data: {
+            terms,
+            searched: `${articles.length} ${plural(articles.length, "статья", "статьи", "статей")}, ${texts.size} ${plural(texts.size, "файл", "файла", "файлов")}`,
+            results: hits,
+            ...(articles.length < total || skipped > 0
+              ? {
+                  partial: [
+                    articles.length < total
+                      ? `Only ${articles.length} of ${total} articles could be searched.`
+                      : "",
+                    skipped > 0
+                      ? `${skipped} more file(s) were not read — the search reads at most ${MAX_INDEXED_FILES}.`
+                      : "",
+                    "Do not conclude a subject is absent from the base on this alone.",
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
+                }
+              : {}),
+            ...(hits.length === 0
+              ? {
+                  note: "Nothing matched. Terms are matched as substrings — try shorter roots («брон» not «забронировать») or a synonym before telling the person the Knowledge Base has nothing on this.",
+                }
+              : {}),
+          },
+        };
+      },
+    };
   }
 
   // ─── kb_list_articles ─────────────────────────────────────────────────────
@@ -683,9 +767,13 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
   }
 
   /**
-   * Every article as a flat summary, with the real total beside it. Bodies are
-   * dropped here rather than in the query because the items API has no column
-   * projection — the rows arrive with their content either way.
+   * Every article as a flat summary, with the real total beside it.
+   *
+   * The body comes along as text and as its list of uploads, because the rows
+   * arrive with their content either way — the items API has no column
+   * projection — and kb_search needs exactly that. Callers that only want the
+   * tree pay one JSON.parse per article for it, which is nothing next to the
+   * round trips that fetched them.
    *
    * `total` is what the backend says exists, which is not always what came
    * back: the walk stops at MAX_ARTICLES. Callers have to compare the two,
@@ -710,11 +798,14 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
       for (const row of page.response) {
         const guid = readString(row.guid);
         if (!guid) continue;
+        const blocks = parseContent(row.content);
         out.push({
           guid,
           parentId: readString(row[PARENT_COLUMN]) ?? null,
           title: title(row),
           icon: readString(row.icon) ?? DEFAULT_ICON,
+          text: documentText(blocks),
+          files: attachedFiles(blocks),
         });
       }
       offset += PAGE_SIZE;
@@ -755,6 +846,9 @@ interface ArticleSummary {
   parentId: string | null;
   title: string;
   icon: string;
+  /** The body as plain text, for kb_search. Never handed to the model whole. */
+  text: string;
+  files: AttachedFile[];
 }
 
 interface WritePlan {
@@ -961,11 +1055,169 @@ const parseContent = (value: unknown): Block[] => {
   return [];
 };
 
-// ─── Uploaded files ─────────────────────────────────────────────────────────
+// ─── Search ─────────────────────────────────────────────────────────────────
 
-/** Where the editor's "Загрузить" tab puts a file. Nothing else is fetched. */
-const CDN_HOST = "cdn.u-code.io";
-const DOWNLOAD_TIMEOUT_MS = 20_000;
+const MIN_TERM_CHARS = 3;
+const MAX_TERMS = 8;
+const MAX_HITS = 5;
+const SNIPPET_CHARS = 280;
+/** Files pulled down for one search. A base past this needs a real index. */
+const MAX_INDEXED_FILES = 25;
+/** Files fetched at once — the CDN is not the thing to be clever with. */
+const INDEX_CONCURRENCY = 4;
+
+interface SearchHit {
+  guid: string;
+  title: string;
+  icon: string;
+  /** Which terms were found, so the model can see what it actually matched. */
+  matched: string[];
+  /** «статья» or the name of the file the snippet came out of. */
+  where: string;
+  snippet: string;
+}
+
+/**
+ * The query as terms.
+ *
+ * Substring matching, and deliberately no stemmer: Russian prefixes make
+ * prefix matching useless («забронировать» shares no prefix with «брони»), and
+ * a real morphological analyser is a dependency and a language list. The model
+ * writes the query, it is good at Russian roots, and the tool description tells
+ * it to send them — so the matching stays a substring test that anyone can
+ * predict from the outside.
+ */
+const searchTerms = (query: string): string[] => [
+  ...new Set(
+    fold(query)
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((t) => t.length >= MIN_TERM_CHARS),
+  ),
+].slice(0, MAX_TERMS);
+
+/**
+ * Case, ё/е and Unicode normalization folded away.
+ *
+ * NFC is not paranoia: a file uploaded from a Mac carries a decomposed name,
+ * and a search that skipped this would miss «Прайслист» in exactly the way
+ * kb_read_file already did once.
+ */
+const fold = (text: string): string =>
+  text.normalize("NFC").toLowerCase().replace(/ё/g, "е");
+
+/**
+ * Every indexable upload in the base, as url → extracted text, plus how many
+ * were left out.
+ *
+ * The count is not bookkeeping: a file nobody looked in and a file with nothing
+ * in it are the same empty result, and only one of them means the base has
+ * nothing on the subject.
+ */
+const indexFiles = async (
+  articles: ArticleSummary[],
+): Promise<{ texts: Map<string, string>; skipped: number }> => {
+  const wanted = new Map<string, string>();
+  for (const article of articles) {
+    for (const file of article.files) {
+      if (!wanted.has(file.url) && isCdnUrl(file.url) && isIndexable(file.name)) {
+        wanted.set(file.url, file.name);
+      }
+    }
+  }
+
+  const pending = [...wanted].slice(0, MAX_INDEXED_FILES);
+  const out = new Map<string, string>();
+  for (let i = 0; i < pending.length; i += INDEX_CONCURRENCY) {
+    const batch = pending.slice(i, i + INDEX_CONCURRENCY);
+    const texts = await Promise.all(
+      batch.map(([url, name]) => indexedText(url, name)),
+    );
+    batch.forEach(([url], n) => out.set(url, texts[n]));
+  }
+  return { texts: out, skipped: wanted.size - pending.length };
+};
+
+const rank = (
+  articles: ArticleSummary[],
+  terms: string[],
+  indexed: Map<string, string>,
+): SearchHit[] => {
+  const hits: SearchHit[] = [];
+
+  for (const article of articles) {
+    // The title goes in front of the body so a title match wins the snippet.
+    const haystacks: Array<{ where: string; text: string }> = [
+      { where: "статья", text: `${article.title}\n${article.text}` },
+      ...article.files.map((f) => ({
+        where: `файл «${f.name}»`,
+        text: indexed.get(f.url) ?? "",
+      })),
+    ];
+
+    let best: SearchHit | null = null;
+    for (const hay of haystacks) {
+      // Composed once here so the snippet and the offsets it is cut at come
+      // from the same string — NFC is the one part of folding that changes a
+      // string's length.
+      const text = hay.text.normalize("NFC");
+      const folded = fold(text);
+      const matched = terms.filter((t) => folded.includes(t));
+      if (matched.length === 0) continue;
+      if (best && best.matched.length >= matched.length) continue;
+      best = {
+        guid: article.guid,
+        title: article.title,
+        icon: article.icon,
+        matched,
+        where: hay.where,
+        snippet: snippet(text, folded, matched[0]),
+      };
+    }
+    if (best) hits.push(best);
+  }
+
+  return hits
+    .sort((a, b) => b.matched.length - a.matched.length)
+    .slice(0, MAX_HITS);
+};
+
+/**
+ * The text around the first hit, cut from the original so its capitals and its
+ * «ё» survive.
+ *
+ * The offset comes from the folded copy, which only lines up while folding maps
+ * one character to one — true for lowercasing and ё→е on text that is already
+ * composed. If some character ever folds to a different length, the folded copy
+ * is shown instead: a lowercased snippet reads fine, a window cut at the wrong
+ * offset does not.
+ */
+const snippet = (text: string, folded: string, term: string): string => {
+  if (text.length !== folded.length) text = folded;
+  const at = folded.indexOf(term);
+  const from = Math.max(0, at - SNIPPET_CHARS / 4);
+  const cut = text
+    .slice(from, from + SNIPPET_CHARS)
+    .replace(/\s+/g, " ")
+    .trim();
+  return (from > 0 ? "…" : "") + cut + (from + SNIPPET_CHARS < text.length ? "…" : "");
+};
+
+/** An article's body as one run of text, nested blocks included. */
+const documentText = (blocks: Block[]): string => {
+  const parts: string[] = [];
+  const walk = (list: Block[]): void => {
+    for (const block of list) {
+      const text = blockText(block);
+      if (text) parts.push(text);
+      const children = readArray(block.children);
+      if (children) walk(children as Block[]);
+    }
+  };
+  walk(blocks);
+  return parts.join("\n");
+};
+
+// ─── Uploaded files ─────────────────────────────────────────────────────────
 
 interface AttachedFile {
   url: string;
@@ -1051,59 +1303,6 @@ const canonicalUrl = (url: string): string => {
     // text, which still matches an identically-spelled counterpart.
   }
   return decoded.normalize("NFC");
-};
-
-const isCdnUrl = (url: string): boolean => {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "https:" && parsed.hostname === CDN_HOST;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Pulls the file down. The CDN link is public, so this carries no credentials —
- * and must not: it is an outbound request built from stored content.
- *
- * Content-Length is checked before the body is read so an oversized file costs
- * one HEAD-sized round trip rather than the whole download; a response without
- * one still cannot get past `fileBlocks`, which caps what it will encode.
- */
-const download = async (
-  url: string,
-): Promise<{ buffer: Buffer; mediaType: string }> => {
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    });
-  } catch (e) {
-    throw new CopilotToolError(
-      `The file could not be downloaded from the storage: ${reason(e)}. Tell the person the file is unreachable rather than guessing what is in it.`,
-    );
-  }
-
-  if (!res.ok) {
-    throw new CopilotToolError(
-      res.status === 404
-        ? "The file is no longer in the storage — the article links to something that was deleted. Say so; do not answer from the filename."
-        : `The storage answered ${res.status} for that file. Say it could not be read.`,
-    );
-  }
-
-  const declared = Number(res.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES) {
-    throw new CopilotToolError(
-      `The file is ${Math.round(declared / 1024 / 1024)} MB, over the ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB the Copilot can read. Ask the person for the part they need, or open it themselves.`,
-    );
-  }
-
-  return {
-    buffer: Buffer.from(await res.arrayBuffer()),
-    mediaType: (res.headers.get("content-type") ?? "").split(";")[0].trim(),
-  };
 };
 
 /** The column is a varchar, so the document goes in as a string. */

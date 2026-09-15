@@ -21,6 +21,7 @@
     "class-validator": "^0.14.3",
     "exceljs": "^4.4.0",
     "js-yaml": "^4.1.0",
+    "pdf-parse": "^1.1.4",
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.2"
   },
@@ -31,6 +32,7 @@
     "@types/jest": "^30.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.19.33",
+    "@types/pdf-parse": "^1.1.5",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",

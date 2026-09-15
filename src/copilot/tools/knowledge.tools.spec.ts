@@ -1,4 +1,5 @@
 import { CopilotKnowledgeTools } from "./knowledge.tools";
+import { clearFileIndex } from "./file-index";
 import { UcodeClient } from "../../ucode/ucode.client";
 import type { CopilotConfig } from "../../config/configuration";
 import type { CopilotTool, CopilotToolContext } from "./tool.types";
@@ -558,5 +559,105 @@ describe("kb_read_file: the same name, spelled two ways", () => {
 
     expect(result.ok).toBe(true);
     expect(fetched).toEqual([NFD]); // the stored spelling, not the model's
+  });
+});
+
+// The miss this tool exists for: the answer to "как забронировать" is on page
+// one of a PDF, in an article called «Прайс». No title matches, no body
+// matches, and kb_list_articles reports a base with nothing on the subject.
+describe("kb_search", () => {
+  const FILE_URL = "https://cdn.u-code.io/kb/price.csv";
+  const CORPUS: UcodeItem[] = [
+    {
+      guid: "aaaaaaaa-1111-4111-8111-111111111111",
+      knowledge_base_articles_id: null,
+      title: "Прайс",
+      icon: "💊",
+      content: JSON.stringify([
+        { type: "paragraph", content: "Актуальный прайс поставщиков" },
+        { type: "file", props: { url: FILE_URL, name: "price.csv" } },
+      ]),
+    },
+    {
+      guid: "bbbbbbbb-2222-4222-8222-222222222222",
+      knowledge_base_articles_id: null,
+      title: "Отпуска",
+      icon: "🏖",
+      content: JSON.stringify([
+        {
+          type: "bulletListItem",
+          content: "Заявление подаётся за две недели",
+          children: [{ type: "paragraph", content: "Отпуск согласует руководитель" }],
+        },
+      ]),
+    },
+  ];
+
+  const realFetch = globalThis.fetch;
+  const searchTool = (): CopilotTool => {
+    const client = new UcodeClient(config);
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, query) =>
+        (query.offset ?? 0) === 0
+          ? { count: CORPUS.length, response: CORPUS }
+          : { count: CORPUS.length, response: [] },
+      );
+    return toolNamed(new CopilotKnowledgeTools(client).getTools(), "kb_search");
+  };
+
+  beforeEach(() => {
+    clearFileIndex();
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async () =>
+      new Response("товар,цена\nКортипан,43557\n\nНомера телефонов для брони: +998 99 000-00-00", {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      }),
+    );
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("finds a subject that exists only inside an attached file", async () => {
+    const result = await searchTool().execute({ query: "брон" }, ctx);
+    const data = result.data as Record<string, unknown>;
+    const hits = data.results as Array<Record<string, unknown>>;
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].guid).toBe(CORPUS[0].guid);
+    expect(hits[0].where).toBe("файл «price.csv»");
+    expect(hits[0].snippet).toContain("брони");
+  });
+
+  it("finds a body that no title mentions, through nesting", async () => {
+    const hits = (
+      (await searchTool().execute({ query: "руководител" }, ctx)).data as Record<
+        string,
+        unknown
+      >
+    ).results as Array<Record<string, unknown>>;
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].guid).toBe(CORPUS[1].guid);
+    expect(hits[0].where).toBe("статья");
+  });
+
+  it("reads each file once however many searches run", async () => {
+    const tool = searchTool();
+    await tool.execute({ query: "брон" }, ctx);
+    await tool.execute({ query: "кортипан" }, ctx);
+
+    expect((globalThis.fetch as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  // Saying "nothing found" is only safe if the model knows how the matching
+  // works — otherwise it reports an absence that is really a word form.
+  it("tells the model to retry with roots instead of declaring absence", async () => {
+    const data = (await searchTool().execute({ query: "забронировать" }, ctx))
+      .data as Record<string, unknown>;
+
+    expect(data.results).toEqual([]);
+    expect(String(data.note)).toMatch(/shorter roots/);
   });
 });

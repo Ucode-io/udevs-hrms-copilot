@@ -35,8 +35,8 @@ const IMAGE_MEDIA = {
   webp: "image/webp",
 } as const;
 
-const SHEET_EXT = new Set(["xlsx", "xlsm"]);
-const TEXT_EXT = new Set(["csv", "tsv", "txt", "md", "json", "yaml", "yml"]);
+export const SHEET_EXT = new Set(["xlsx", "xlsm"]);
+export const TEXT_EXT = new Set(["csv", "tsv", "txt", "md", "json", "yaml", "yml"]);
 
 /**
  * Turns one upload into the content blocks that open the person's message.
@@ -165,7 +165,7 @@ const safeName = (name: string): string =>
  * CSV rather than a JSON dump of cells: it is the densest honest rendering of a
  * grid, and it keeps the header row where the model expects to find it.
  */
-const sheetsToText = async (buffer: Buffer): Promise<string> => {
+export const sheetsToText = async (buffer: Buffer): Promise<string> => {
   const workbook = new Workbook();
   // exceljs carries its own node typings, so its Buffer and ours are the same
   // structure under two declarations and TypeScript will not equate them.
@@ -233,7 +233,7 @@ const csvCell = (text: string): string =>
  * Russian Excel is cp1251, and reading it as UTF-8 turns every name into
  * replacement characters — which the model would faithfully import.
  */
-const decodeText = (buffer: Buffer): string => {
+export const decodeText = (buffer: Buffer): string => {
   const utf8 = new TextDecoder("utf-8").decode(buffer);
   const text = utf8.includes("�")
     ? new TextDecoder("windows-1251").decode(buffer)
@@ -241,7 +241,7 @@ const decodeText = (buffer: Buffer): string => {
   return text.replace(/^﻿/, "");
 };
 
-const truncate = (text: string): string =>
+export const truncate = (text: string): string =>
   text.length > MAX_TEXT_CHARS
     ? `${text.slice(0, MAX_TEXT_CHARS)}\n\n(truncated — the file is longer than this)`
     : text;
