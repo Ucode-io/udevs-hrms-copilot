@@ -518,3 +518,45 @@ describe("kb_read_file", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+// The bug this pins: a file uploaded from a Mac is stored with its name
+// decomposed (NFD), a model handed that url back writes it composed (NFC), and
+// the two look identical while comparing unequal — so the article's own file
+// was reported missing from the article. The fetch has to use the stored
+// spelling either way: the CDN answers 404 for the composed one.
+describe("kb_read_file: the same name, spelled two ways", () => {
+  const NFD = "https://cdn.u-code.io/kb/Прайслист.pdf".normalize("NFD");
+  const ARTICLE: UcodeItem = {
+    guid: "55555555-5555-4555-8555-555555555555",
+    knowledge_base_articles_id: null,
+    title: "Прайс",
+    icon: "💊",
+    content: JSON.stringify([{ type: "file", props: { url: NFD, name: "Прайслист.pdf" } }]),
+  };
+
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("matches the composed url and still fetches the stored one", async () => {
+    const client = new UcodeClient(config);
+    jest.spyOn(client, "getOne").mockResolvedValue(ARTICLE);
+    const fetched: string[] = [];
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async (url: string) => {
+      fetched.push(url);
+      return new Response("текст", { status: 200, headers: { "content-type": "text/plain" } });
+    });
+
+    const result = await toolNamed(
+      new CopilotKnowledgeTools(client).getTools(),
+      "kb_read_file",
+    ).execute(
+      { guid: ARTICLE.guid as string, url: NFD.normalize("NFC") }, // what the model sends
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(fetched).toEqual([NFD]); // the stored spelling, not the model's
+  });
+});

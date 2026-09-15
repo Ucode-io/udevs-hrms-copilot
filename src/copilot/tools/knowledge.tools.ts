@@ -195,7 +195,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         const row = await this.requireArticle(ctx, guid);
 
         const files = attachedFiles(parseContent(row.content));
-        const file = files.find((f) => f.url === url);
+        const file = files.find((f) => sameUrl(f.url, url));
         if (!file) {
           throw new CopilotToolError(
             files.length === 0
@@ -203,13 +203,16 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
               : `No file with that url in «${title(row)}». Use one of: ${files.map((f) => f.url).join(", ")}.`,
           );
         }
-        if (!isCdnUrl(url)) {
+        if (!isCdnUrl(file.url)) {
           throw new CopilotToolError(
             `That link points outside the company's file storage (${CDN_HOST}), so it is not read. Tell the person what the link is and let them open it.`,
           );
         }
 
-        const { buffer, mediaType } = await download(url);
+        // The article's own spelling, never the model's: the two can match as
+        // text and still differ byte for byte, and the CDN key is the one the
+        // editor uploaded.
+        const { buffer, mediaType } = await download(file.url);
         return {
           ok: true,
           summary: `Файл «${file.name}» из статьи «${title(row)}»`,
@@ -217,7 +220,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
             guid,
             article: title(row),
             name: file.name,
-            url,
+            url: file.url,
             bytes: buffer.byteLength,
             // The bytes ride outside the tool_result block, past the untrusted
             // marker the JSON payload carries — so the warning has to travel
@@ -1021,6 +1024,33 @@ const fileName = (
     last = raw;
   }
   return last || given || "file";
+};
+
+/**
+ * Whether the model named the file the article carries.
+ *
+ * Not `===`: a file uploaded from a Mac arrives with its name decomposed
+ * (NFD — «й» as «и» plus a combining breve), and a model handed that url back
+ * writes it composed (NFC). The two render identically on screen and compare
+ * unequal byte for byte, which is exactly the check that told a person the
+ * price list they were looking at was not in the article it was in.
+ *
+ * Percent-encoding is folded for the same reason — the same name survives a
+ * round trip through a URL either escaped or raw, and neither spelling is the
+ * model's mistake.
+ */
+const sameUrl = (a: string, b: string): boolean =>
+  canonicalUrl(a) === canonicalUrl(b);
+
+const canonicalUrl = (url: string): string => {
+  let decoded = url;
+  try {
+    decoded = decodeURI(url);
+  } catch {
+    // A stray % is not a reason to refuse a comparison — fall back to the raw
+    // text, which still matches an identically-spelled counterpart.
+  }
+  return decoded.normalize("NFC");
 };
 
 const isCdnUrl = (url: string): boolean => {
