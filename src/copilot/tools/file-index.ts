@@ -129,8 +129,11 @@ export const indexedText = async (url: string, name: string): Promise<string> =>
     text = await extractText(name, buffer);
   } catch (e) {
     // Warn rather than shout: an article linking to a deleted file is a
-    // Knowledge Base someone has to tidy, not an incident.
+    // Knowledge Base someone has to tidy, not an incident. Nothing is cached
+    // on the way out, so a file that failed once because the network hiccuped
+    // is read again on the next search rather than reading as empty forever.
     logger.warn(`Could not index "${name}": ${reason(e)}`);
+    return "";
   }
 
   if (cache.size >= MAX_CACHED_FILES) {
@@ -142,6 +145,9 @@ export const indexedText = async (url: string, name: string): Promise<string> =>
   cache.set(url, text);
   return text;
 };
+
+/** Whether this file's text is already in hand, and so costs nothing to search. */
+export const isIndexed = (url: string): boolean => cache.has(url);
 
 /** Only for tests — the cache is a process-wide singleton otherwise. */
 export const clearFileIndex = (): void => cache.clear();

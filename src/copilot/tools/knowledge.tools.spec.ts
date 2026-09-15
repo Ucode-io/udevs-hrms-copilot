@@ -693,3 +693,109 @@ describe("kb_search", () => {
     expect(String(data.note)).toMatch(/shorter roots/);
   });
 });
+
+// The shape the tree actually has: «Аллерайз» holds three files of its own and
+// two folders holding five more. Asked for "файлы по Аллерайз", a person means
+// all eight — the folders are not other subjects, they are where the rest of
+// the same subject lives.
+describe("kb_search: an article is its subtree", () => {
+  const ALLERAYZ = "aaaaaaaa-0000-4000-8000-000000000001";
+  const file = (name: string) => ({
+    type: "file",
+    props: { url: `https://cdn.u-code.io/kb/${encodeURIComponent(name)}`, name },
+  });
+  const TREE: UcodeItem[] = [
+    {
+      guid: ALLERAYZ,
+      knowledge_base_articles_id: null,
+      title: "Аллерайз",
+      icon: "💊",
+      content: JSON.stringify([
+        file("allerayz-ru.png"),
+        file("PD Allerayz rus.docx"),
+        file("PD Allerayz uzb.docx"),
+      ]),
+    },
+    {
+      guid: "bbbbbbbb-0000-4000-8000-000000000002",
+      knowledge_base_articles_id: ALLERAYZ,
+      title: "Инструкции",
+      icon: "📁",
+      content: JSON.stringify([
+        file("Instruction Allerayz rus.pdf"),
+        file("Instruction Allerayz uzb.pdf"),
+      ]),
+    },
+    {
+      guid: "cccccccc-0000-4000-8000-000000000003",
+      knowledge_base_articles_id: ALLERAYZ,
+      title: "Презентации",
+      icon: "📁",
+      content: JSON.stringify([
+        file("Presentation Allerayz MP rus.pptx"),
+        file("Presentation Allerayz obshaya rus.pptx"),
+        file("Аллерайз общая.pdf"),
+      ]),
+    },
+  ];
+
+  const realFetch = globalThis.fetch;
+  const tool = (): CopilotTool => {
+    const client = new UcodeClient(config);
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, q) =>
+        (q.offset ?? 0) === 0
+          ? { count: TREE.length, response: TREE }
+          : { count: TREE.length, response: [] },
+      );
+    return toolNamed(new CopilotKnowledgeTools(client).getTools(), "kb_search");
+  };
+
+  beforeEach(() => {
+    clearFileIndex();
+    // Nothing readable — the point is that names and the tree carry this on
+    // their own, without a byte being downloaded.
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async () =>
+      new Response("", { status: 404 }),
+    );
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("offers every file under the article, not only its own three", async () => {
+    const result = await tool().execute({ query: "аллерайз" }, ctx);
+    const labels = (result.links ?? []).map((l) => l.label);
+
+    expect(labels).toHaveLength(8);
+    expect(labels).toContain("Скачать «Instruction Allerayz rus.pdf»");
+    expect(labels).toContain("Скачать «Presentation Allerayz MP rus.pptx»");
+  });
+
+  it("says which sub-article a file came from", async () => {
+    const hit = (
+      (await tool().execute({ query: "аллерайз" }, ctx)).data as {
+        results: Array<{ files: Array<Record<string, unknown>> }>;
+      }
+    ).results[0];
+
+    expect(hit.files).toContainEqual(
+      expect.objectContaining({ name: "Instruction Allerayz rus.pdf", article: "Инструкции" }),
+    );
+    expect(hit.files[0].article).toBeUndefined(); // the article's own file
+  });
+
+  // A .docx or .pptx has no reader here, and a 404 file has nothing to read —
+  // the name is all there is, and it is enough to find the thing.
+  it("finds a file by its name with nothing downloaded", async () => {
+    const hits = (
+      (await tool().execute({ query: "presentation" }, ctx)).data as {
+        results: Array<Record<string, unknown>>;
+      }
+    ).results;
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].where).toBe("файл «Presentation Allerayz MP rus.pptx»");
+  });
+});

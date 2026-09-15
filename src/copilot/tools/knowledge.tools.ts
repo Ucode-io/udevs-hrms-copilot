@@ -8,6 +8,7 @@ import {
   indexedText,
   isCdnUrl,
   isIndexable,
+  isIndexed,
 } from "./file-index";
 import type { UcodeItem } from "../../ucode/ucode.types";
 import type { CopilotFieldChange, CopilotLink } from "../types/copilot.types";
@@ -113,8 +114,11 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
           // A file that answered the search is offered for download right here,
           // so "скинь прайс" costs one search instead of reading a megabyte of
           // PDF into the conversation to produce a button.
-          links: hits
-            .flatMap((hit) => hit.files ?? [])
+          links: uniqueBy(
+            hits.flatMap((hit) => hit.files ?? []),
+            (file) => file.url,
+          )
+            .slice(0, MAX_LINKS)
             .map((file) => fileLink(file.name, file.url)),
           data: {
             terms,
@@ -127,7 +131,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
                       ? `Only ${articles.length} of ${total} articles could be searched.`
                       : "",
                     skipped > 0
-                      ? `${skipped} more file(s) were not read — the search reads at most ${MAX_INDEXED_FILES}.`
+                      ? `${skipped} file(s) have not been read yet — this search ran out of time for them, and the next one will pick them up. Their contents were not searched; their names were.`
                       : "",
                     "Do not conclude a subject is absent from the base on this alone.",
                   ]
@@ -1074,10 +1078,25 @@ const MIN_TERM_CHARS = 3;
 const MAX_TERMS = 8;
 const MAX_HITS = 5;
 const SNIPPET_CHARS = 280;
-/** Download buttons one matched article may contribute. */
-const MAX_FILES_PER_HIT = 3;
-/** Files pulled down for one search. A base past this needs a real index. */
-const MAX_INDEXED_FILES = 25;
+/**
+ * Files one matched article may offer, its sub-articles included. «Аллерайз» is
+ * a folder with three files of its own and two sub-articles holding five more;
+ * asked for "файлы по Аллерайз", a person means all eight.
+ */
+const MAX_FILES_PER_HIT = 12;
+/** Download buttons one search may put on screen, however many articles hit. */
+const MAX_LINKS = 20;
+/**
+ * How long one search may spend reading files it has not read before.
+ *
+ * A count would be the obvious cap and is the wrong one: which files fall under
+ * it depends on the order articles come back in, so a base that grows quietly
+ * stops searching the files it used to search, and the answer changes without
+ * anything about the question changing. Time bounds the turn instead, already
+ * read files cost nothing, and each search finishes a little more of the base
+ * until it is all in hand.
+ */
+const INDEX_BUDGET_MS = 8_000;
 /** Files fetched at once — the CDN is not the thing to be clever with. */
 const INDEX_CONCURRENCY = 4;
 
@@ -1098,7 +1117,7 @@ interface SearchHit {
    * for «прайс», the person wants the PDF hanging off the article called
    * «Прайс», and nothing says the word «прайс» has to appear inside it.
    */
-  files?: Array<{ name: string; url: string }>;
+  files?: Array<{ name: string; url: string; article?: string }>;
 }
 
 /**
@@ -1149,16 +1168,82 @@ const indexFiles = async (
     }
   }
 
-  const pending = [...wanted].slice(0, MAX_INDEXED_FILES);
+  // What has been read before is free, so it is never at the mercy of the
+  // budget — only new files queue up behind it.
+  const known = [...wanted].filter(([url]) => isIndexed(url));
+  const fresh = [...wanted].filter(([url]) => !isIndexed(url));
+
   const out = new Map<string, string>();
-  for (let i = 0; i < pending.length; i += INDEX_CONCURRENCY) {
-    const batch = pending.slice(i, i + INDEX_CONCURRENCY);
+  for (const [url, name] of known) out.set(url, await indexedText(url, name));
+
+  const startedAt = Date.now();
+  let read = 0;
+  for (let i = 0; i < fresh.length; i += INDEX_CONCURRENCY) {
+    if (Date.now() - startedAt > INDEX_BUDGET_MS) break;
+    const batch = fresh.slice(i, i + INDEX_CONCURRENCY);
     const texts = await Promise.all(
       batch.map(([url, name]) => indexedText(url, name)),
     );
     batch.forEach(([url], n) => out.set(url, texts[n]));
+    read += batch.length;
   }
-  return { texts: out, skipped: wanted.size - pending.length };
+
+  return { texts: out, skipped: fresh.length - read };
+};
+
+/** parentId → its articles, so a hit can reach what is filed under it. */
+const childrenByParent = (
+  articles: ArticleSummary[],
+): Map<string, ArticleSummary[]> => {
+  const out = new Map<string, ArticleSummary[]>();
+  for (const article of articles) {
+    if (!article.parentId) continue;
+    const siblings = out.get(article.parentId);
+    if (siblings) siblings.push(article);
+    else out.set(article.parentId, [article]);
+  }
+  return out;
+};
+
+/**
+ * The files of a matched article and of everything filed under it.
+ *
+ * Asked for "файлы по Аллерайз", a person means the article and its folders —
+ * «Инструкции» and «Презентации» are not other subjects, they are where the
+ * rest of the same subject lives. Offering only the article's own three files
+ * while five more sit one level down is the answer being wrong by the tree.
+ *
+ * A file from a sub-article carries that sub-article's title, so the model can
+ * say where it came from instead of listing eight names flat.
+ */
+const subtreeFiles = (
+  root: ArticleSummary,
+  children: Map<string, ArticleSummary[]>,
+): Array<{ name: string; url: string; article?: string }> => {
+  const out: Array<{ name: string; url: string; article?: string }> = [];
+  const seen = new Set<string>();
+  // A cycle cannot be written through kb_write_article, which refuses to file
+  // an article under its own descendant — but a walk that trusts the data to be
+  // a tree hangs the request on the day something else writes one.
+  const visited = new Set<string>([root.guid]);
+
+  const walk = (article: ArticleSummary, from?: string): void => {
+    for (const file of article.files) {
+      if (out.length >= MAX_FILES_PER_HIT) return;
+      if (!isCdnUrl(file.url) || seen.has(file.url)) continue;
+      seen.add(file.url);
+      out.push({ name: file.name, url: file.url, ...(from ? { article: from } : {}) });
+    }
+    for (const child of children.get(article.guid) ?? []) {
+      if (out.length >= MAX_FILES_PER_HIT) return;
+      if (visited.has(child.guid)) continue;
+      visited.add(child.guid);
+      walk(child, child.title);
+    }
+  };
+
+  walk(root);
+  return out;
 };
 
 const rank = (
@@ -1167,6 +1252,7 @@ const rank = (
   indexed: Map<string, string>,
 ): SearchHit[] => {
   const hits: SearchHit[] = [];
+  const children = childrenByParent(articles);
 
   for (const article of articles) {
     // The title goes in front of the body so a title match wins the snippet.
@@ -1176,9 +1262,13 @@ const rank = (
       file?: AttachedFile;
     }> = [
       { where: "статья", text: `${article.title}\n${article.text}` },
+      // The name is searched as part of the file: «Instruction Allerayz rus.pdf»
+      // answers "allerayz" without anything being downloaded, and it is the only
+      // thing there is to match on for a .docx or a .pptx, whose insides no
+      // extractor here can read.
       ...article.files.map((f) => ({
         where: `файл «${f.name}»`,
-        text: indexed.get(f.url) ?? "",
+        text: `${f.name}\n${indexed.get(f.url) ?? ""}`,
         file: f,
       })),
     ];
@@ -1206,14 +1296,9 @@ const rank = (
     if (best) {
       // Attached after the snippet is settled, and independently of it: which
       // haystack won says where the evidence was, not what the person can be
-      // handed. Only files on the company's storage — an arbitrary link an
-      // article happens to contain is not something to dress up as a download.
-      const files = article.files
-        .filter((f) => isCdnUrl(f.url))
-        .slice(0, MAX_FILES_PER_HIT);
-      if (files.length > 0) {
-        best.files = files.map((f) => ({ name: f.name, url: f.url }));
-      }
+      // handed.
+      const files = subtreeFiles(article, children);
+      if (files.length > 0) best.files = files;
       hits.push(best);
     }
   }
@@ -1445,6 +1530,17 @@ const fileLink = (name: string, url: string): CopilotLink => ({
   external: true,
   kind: "file",
 });
+
+/** First of each key, order kept — two hits can share a file from one subtree. */
+const uniqueBy = <T>(items: T[], key: (item: T) => string): T[] => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const k = key(item);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
 
 /** 1 статья / 2 статьи / 5 статей. */
 const plural = (n: number, one: string, few: string, many: string): string => {
