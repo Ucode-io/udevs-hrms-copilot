@@ -687,6 +687,11 @@ export class CopilotService {
           content: body,
           is_error: isError,
         },
+        // A file the tool fetched rides beside the result rather than inside
+        // it: a PDF or an image cannot be JSON, and a tool_result block takes
+        // no document. Blocks after the tool_result in the same user message
+        // are the one place the API accepts them.
+        ...(isError ? [] : (payload.blocks ?? [])),
       ],
     };
   }

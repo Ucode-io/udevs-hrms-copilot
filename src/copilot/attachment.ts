@@ -52,9 +52,21 @@ const TEXT_EXT = new Set(["csv", "tsv", "txt", "md", "json", "yaml", "yml"]);
  */
 export const attachmentBlocks = async (
   attachment: CopilotAttachment,
+): Promise<Anthropic.ContentBlockParam[]> =>
+  fileBlocks(attachment.name, attachment.mediaType, Buffer.from(attachment.data, "base64"));
+
+/**
+ * The same reading, for a file that did not arrive on the message — a Knowledge
+ * Base upload the Copilot fetched from the CDN (`kb_read_file`). Routing,
+ * caps and the "could not be read" note are one implementation on purpose: a
+ * .xlsx in an article is the same file it would be as an upload.
+ */
+export const fileBlocks = async (
+  rawName: string,
+  mediaType: string,
+  buffer: Buffer,
 ): Promise<Anthropic.ContentBlockParam[]> => {
-  const name = safeName(attachment.name);
-  const buffer = Buffer.from(attachment.data, "base64");
+  const name = safeName(rawName);
 
   if (buffer.byteLength === 0) return [note(name, "it arrived empty")];
   if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
@@ -65,7 +77,7 @@ export const attachmentBlocks = async (
 
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
 
-  if (ext === "pdf" || attachment.mediaType === "application/pdf") {
+  if (ext === "pdf" || mediaType === "application/pdf") {
     return [
       label(name),
       {
@@ -109,7 +121,7 @@ export const attachmentBlocks = async (
     return [note(name, "the old .xls format cannot be read — save it as .xlsx or .csv")];
   }
 
-  if (TEXT_EXT.has(ext) || attachment.mediaType.startsWith("text/")) {
+  if (TEXT_EXT.has(ext) || mediaType.startsWith("text/")) {
     return [label(name), document(name, truncate(decodeText(buffer)))];
   }
 
@@ -137,7 +149,7 @@ const document = (name: string, text: string): Anthropic.ContentBlockParam => ({
 
 const note = (name: string, reason: string): Anthropic.ContentBlockParam => ({
   type: "text",
-  text: `[The person attached "${name}" but it could not be read: ${reason}. Tell them, and say which formats work: XLSX, CSV, PDF, or a photo of the list.]`,
+  text: `[The file "${name}" could not be read: ${reason}. Tell the person, and say which formats work: XLSX, CSV, PDF, or an image.]`,
 });
 
 /**

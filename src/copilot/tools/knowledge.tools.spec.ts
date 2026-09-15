@@ -433,3 +433,88 @@ describe("kb_delete_article: a cascade that dies halfway", () => {
     ).rejects.toThrow(/Deleted 1 of 2 sub-article\(s\), then failed/);
   });
 });
+
+// The point of kb_read_file: the article body holds a link, never the text
+// inside the file, and the url it is asked to fetch is content someone else
+// wrote — so only a url this article really carries, on the CDN, is fetched.
+describe("kb_read_file", () => {
+  const CDN = "https://cdn.u-code.io/knowledge-base/policy.csv";
+  const WITH_FILE: UcodeItem = {
+    guid: "44444444-4444-4444-8444-444444444444",
+    knowledge_base_articles_id: null,
+    title: "Регламент",
+    icon: "📎",
+    content: JSON.stringify([
+      { type: "paragraph", content: "Подробности в файле" },
+      {
+        type: "bulletListItem",
+        content: "Вложение",
+        children: [{ type: "file", props: { url: CDN, name: "policy.csv" } }],
+      },
+    ]),
+  };
+
+  const tools = (): CopilotTool[] => {
+    const client = new UcodeClient(config);
+    jest
+      .spyOn(client, "getOne")
+      .mockImplementation(async (_c, _t, guid) =>
+        guid === WITH_FILE.guid ? WITH_FILE : (ARTICLES.find((a) => a.guid === guid) ?? null),
+      );
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, query) =>
+        (query.offset ?? 0) === 0
+          ? { count: 1, response: [WITH_FILE] }
+          : { count: 1, response: [] },
+      );
+    return new CopilotKnowledgeTools(client).getTools();
+  };
+
+  // Restore rather than delete: `fetch` is a real own property of globalThis on
+  // node 18+, so deleting it takes it away from every later test in this worker.
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("lists a nested upload on the article and reads its text", async () => {
+    const read = await toolNamed(tools(), "kb_read_article").execute(
+      { guid: WITH_FILE.guid as string },
+      ctx,
+    );
+    expect((read.data as Record<string, unknown>).files).toEqual([
+      { url: CDN, name: "policy.csv" },
+    ]);
+
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async () =>
+      new Response("имя,отдел\nАли,HR", {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      }),
+    );
+
+    const result = await toolNamed(tools(), "kb_read_file").execute(
+      { guid: WITH_FILE.guid as string, url: CDN },
+      ctx,
+    );
+    const document = result.blocks?.find((b) => b.type === "document");
+    expect(document).toMatchObject({
+      title: "policy.csv",
+      source: { data: "имя,отдел\nАли,HR" },
+    });
+  });
+
+  it("does not fetch a url the article does not carry", async () => {
+    const fetchSpy = jest.fn();
+    (globalThis as { fetch?: unknown }).fetch = fetchSpy;
+
+    await expect(
+      toolNamed(tools(), "kb_read_file").execute(
+        { guid: WITH_FILE.guid as string, url: "https://cdn.u-code.io/other/secret.pdf" },
+        ctx,
+      ),
+    ).rejects.toThrow(/No file with that url/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

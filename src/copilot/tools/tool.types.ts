@@ -1,3 +1,4 @@
+import type Anthropic from "@anthropic-ai/sdk";
 import type {
   CopilotChart,
   CopilotFieldChange,
@@ -35,6 +36,13 @@ export interface CopilotToolResult {
   kpis?: CopilotKpi[];
   tables?: CopilotTable[];
   links?: CopilotLink[];
+  /**
+   * Raw content blocks appended to the tool_result message — the only way to
+   * hand the model something JSON cannot carry: the bytes of a PDF or an image.
+   * `kb_read_file` is the one user. They are stored on the Thread like any
+   * attachment, so `compactAttachments` drops all but the newest.
+   */
+  blocks?: Anthropic.ContentBlockParam[];
   /** Present when `ok === false`. */
   error?: string;
 }
