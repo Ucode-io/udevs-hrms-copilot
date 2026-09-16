@@ -216,6 +216,30 @@ describe("a question in a private chat", () => {
     expect(api.editText).toHaveBeenCalledWith("777", 9, "Компания: U-Code");
   });
 
+  it("remembers a company picked by /company, with no question waiting", async () => {
+    // Live bug: /company answered "Отвечаю по компании «Udevs»" and the very
+    // next question asked which company again. A Company is remembered on a
+    // Conversation, and /company chooses one before any Conversation exists —
+    // so one has to be opened right there.
+    const { service, store } = build({
+      identities: [identity("co-1", "Udevs"), identity("co-2", "U-Code")],
+    });
+
+    await service.handleUpdate({
+      callback_query: {
+        id: "cb1",
+        data: "co:co-1",
+        message: { chat: { id: 777, type: "private" }, message_id: 9 },
+      },
+    });
+
+    expect(store.create).toHaveBeenCalledWith(
+      expect.objectContaining({ companiesId: "co-1" }),
+      "Выбор компании",
+      "777",
+    );
+  });
+
   it("continues the Conversation the chat is already in", async () => {
     const { service, copilot, store } = build({
       identities: [identity("co-1", "Udevs"), identity("co-2", "U-Code")],

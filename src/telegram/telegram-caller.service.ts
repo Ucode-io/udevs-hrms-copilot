@@ -62,7 +62,7 @@ export class TelegramCallerService {
     );
 
     const identities: ChatIdentity[] = [];
-    for (const row of rows) {
+    for (const row of pickOnePerCompany(rows, this.config.hrms.employeeRoleId)) {
       const userId = String(row.guid ?? "");
       const companiesId = String(row.companies_id ?? "");
       // A record with no Company cannot scope a single query — the same refusal
@@ -122,6 +122,35 @@ export class TelegramCallerService {
     return name;
   }
 }
+
+/**
+ * One record per Company.
+ *
+ * A person can hold several records inside the SAME company — seen live: two
+ * cards in "Delever", one as an employee and one as an admin. Left alone that
+ * becomes two identical buttons in the picker, where whichever one is tapped is
+ * a coin toss the person cannot see.
+ *
+ * The employee record wins, because that is the one the questions are about:
+ * leave balance, attendance and payroll hang off it. Without a configured
+ * employee role the first record stands, which is the old behaviour.
+ */
+const pickOnePerCompany = (
+  rows: Array<Record<string, unknown>>,
+  employeeRoleId: string | null,
+): Array<Record<string, unknown>> => {
+  const byCompany = new Map<string, Record<string, unknown>>();
+
+  for (const row of rows) {
+    const companiesId = String(row.companies_id ?? "");
+    const kept = byCompany.get(companiesId);
+    const isEmployee =
+      employeeRoleId !== null && String(row.role_id ?? "") === employeeRoleId;
+
+    if (!kept || isEmployee) byCompany.set(companiesId, row);
+  }
+  return [...byCompany.values()];
+};
 
 const unwrap = (body: unknown): unknown => {
   const b = body as { data?: { data?: unknown } } | null;

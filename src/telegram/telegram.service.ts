@@ -38,6 +38,14 @@ const PICK_COMPANY_TEXT =
 const NOTHING_PENDING_TEXT = "Это действие уже неактуально.";
 
 /**
+ * Title of the Conversation /company opens before any question exists.
+ *
+ * It never reaches the panel's history — that list skips Conversations with an
+ * empty thread — so this only ever shows up in the audit trail.
+ */
+const COMPANY_PICKED_TITLE = "Выбор компании";
+
+/**
  * What the bot says it is doing, by tool.
  *
  * Grouped rather than one line per tool: the person waiting wants to know the
@@ -404,10 +412,12 @@ export class TelegramService implements OnModuleInit {
     }
 
     if (!waiting) {
-      await this.api.sendMessage(
-        chatId,
-        `Отвечаю по компании «${picked.companyName}». Задайте вопрос.`,
-      );
+      // /company picks a Company before there is a question, and a Conversation
+      // is the only place a Company is remembered — so one is opened empty
+      // here. Without it the choice evaporates the moment it is made, and the
+      // very next question asks which company all over again.
+      await this.store.create(picked.caller, COMPANY_PICKED_TITLE, chatId);
+      await this.api.sendMessage(chatId, "Задайте вопрос.");
       return;
     }
 
@@ -416,11 +426,20 @@ export class TelegramService implements OnModuleInit {
 
   // ─── Commands ─────────────────────────────────────────────────────────────
 
+  private async onReset(chatId: string): Promise<void> {
+    await this.endConversation(chatId);
+    await this.api.sendMessage(chatId, "Начинаю заново. О чём спросить?");
+  }
+
   /**
    * Ends the Conversation this chat is in, without deleting it: the row stays
    * for the audit trail, it simply stops being found by the next message.
+   *
+   * Silent, because /company ends one on its way to asking which company — and
+   * announcing that in the middle of answering a command the person did not
+   * give is noise.
    */
-  private async onReset(chatId: string): Promise<void> {
+  private async endConversation(chatId: string): Promise<void> {
     const identities = await this.callers.identities(chatId);
     const open = await this.findOpen(chatId, identities);
     if (open) {
@@ -429,7 +448,6 @@ export class TelegramService implements OnModuleInit {
       await this.store.save(conversation);
     }
     this.awaitingCompany.delete(chatId);
-    await this.api.sendMessage(chatId, "Начинаю заново. О чём спросить?");
   }
 
   private async onSwitchCompany(chatId: string): Promise<void> {
@@ -449,7 +467,7 @@ export class TelegramService implements OnModuleInit {
     // Switching Company ends the current Conversation: its thread is about
     // another company's numbers, and carrying it over would invite the model to
     // compare the two as if it had been asked to.
-    await this.onReset(chatId);
+    await this.endConversation(chatId);
     const buttons: InlineButton[][] = identities.map((i) => [
       {
         text: i.companyName,
