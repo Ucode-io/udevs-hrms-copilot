@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { CONFIG, type CopilotConfig } from "../config/configuration";
 import { UcodeClient } from "../ucode/ucode.client";
+import { rowLabel } from "../ucode/labels";
 import type { CallerContext } from "../ucode/ucode.types";
 
 /** One employee record behind a Telegram account — one person in one Company. */
@@ -77,6 +78,13 @@ export class TelegramCallerService {
           // `service` is for. See CallerContext.service for what that costs.
           token: "",
           service: true,
+          // Their name travels for the prompt only — "мой отпуск" has to resolve
+          // to this employee without the bot asking a personal chat who it is
+          // talking to. Authorization still runs on the guid above.
+          person: {
+            name: rowLabel(row) ?? "сотрудник",
+            surface: "telegram",
+          },
         },
         companyName: await this.companyName(companiesId),
       });

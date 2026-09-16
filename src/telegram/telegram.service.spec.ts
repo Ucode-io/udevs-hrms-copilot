@@ -21,6 +21,7 @@ const api = {
   sendTyping: jest.fn(async () => {}),
   answerCallback: jest.fn(async () => {}),
   clearButtons: jest.fn(async () => {}),
+  editText: jest.fn(async () => {}),
 };
 
 const ucode = {
@@ -187,8 +188,9 @@ describe("a question in a private chat", () => {
       expect.objectContaining({ companiesId: "co-2" }),
       { conversationId: "conv-1", message: "Сколько у меня отпуска?" },
     );
-    // The picker is spent — leaving it live invites a second, contradictory choice.
-    expect(api.clearButtons).toHaveBeenCalledWith("777", 9);
+    // The picker becomes the record of what was chosen. Buttons that merely
+    // vanish leave the person unable to tell which company answered.
+    expect(api.editText).toHaveBeenCalledWith("777", 9, "Компания: U-Code");
   });
 
   it("continues the Conversation the chat is already in", async () => {

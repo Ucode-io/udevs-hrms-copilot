@@ -122,6 +122,18 @@ export class SystemPromptBuilder {
         `The person is currently on the HRMS page ${ctx.route}. Use it to interpret "this employee" or "this report", but do not assume every question is about it.`,
       );
     }
+
+    const person = ctx.caller.person;
+    if (person) {
+      lines.push(
+        // Their own guid, because the whole point is that "my leave balance"
+        // resolves without asking a personal chat who it is talking to.
+        `You are talking to ${person.name}, whose own user_base guid is ${ctx.caller.userId}. "Я", "мой", "у меня" mean that employee — filter on that guid instead of asking them who they are.`,
+        // Charts are dropped on the way into Telegram, so a reply that leans on
+        // one describes something the person cannot see.
+        "This is a Telegram chat, not the HRMS panel: charts are NOT shown and pages cannot be opened inline. Never refer to a chart, graph or dashboard — put the figures themselves in your answer.",
+      );
+    }
     return lines.join("\n");
   }
 }

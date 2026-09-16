@@ -113,4 +113,14 @@ export interface CallerContext {
    * forced into every tool query, not a sentence in the system prompt.
    */
   service?: boolean;
+  /**
+   * The Caller as a person, for the prompt — never for authorization, which
+   * uses `userId` and `companiesId` and nothing else.
+   *
+   * Set only on the Telegram path, and set by us rather than by any client.
+   * Without it the model has no idea who "я" is: asked "сколько у меня
+   * осталось отпуска" it can only ask for a name back, which in a personal chat
+   * with an employee is the one question it should never have to ask.
+   */
+  person?: { name: string; surface: "telegram" };
 }

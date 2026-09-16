@@ -82,6 +82,23 @@ export class TelegramApi {
   }
 
   /**
+   * Replaces a message's text and drops its buttons in one call.
+   *
+   * Used where the tap itself is the information — picking a company leaves no
+   * other trace, and a picker that simply loses its buttons reads as the bot
+   * having swallowed the choice.
+   */
+  async editText(chatId: string, messageId: number, text: string): Promise<void> {
+    await this.call("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+
+  /**
    * Strips the buttons off a message that has been acted on, so a confirmation
    * card cannot be tapped a second time and a company picker stops inviting a
    * choice that has already been made.

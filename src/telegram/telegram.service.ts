@@ -5,7 +5,7 @@ import type { CallerContext } from "../ucode/ucode.types";
 import { ConversationStore } from "../copilot/conversation.store";
 import { CopilotService } from "../copilot/copilot.service";
 import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
-import { CONFIRM_PREFIX, REJECT_PREFIX, renderAnswer } from "./render";
+import { CONFIRM_PREFIX, REJECT_PREFIX, escapeHtml, renderAnswer } from "./render";
 import { TelegramApi, type InlineButton } from "./telegram.api";
 import { TelegramCallerService, type ChatIdentity } from "./telegram-caller.service";
 import { routeUpdate } from "./update-router";
@@ -250,14 +250,20 @@ export class TelegramService {
     data: string,
   ): Promise<void> {
     await this.api.answerCallback(callbackId);
+
+    if (data.startsWith(COMPANY_PREFIX)) {
+      // The picker rewrites itself with the choice — see onCompanyPicked.
+      await this.onCompanyPicked(
+        chatId,
+        data.slice(COMPANY_PREFIX.length),
+        messageId,
+      );
+      return;
+    }
+
     // The card has been acted on; leaving its buttons live invites a second tap
     // that can only ever be refused.
     if (messageId) await this.api.clearButtons(chatId, messageId);
-
-    if (data.startsWith(COMPANY_PREFIX)) {
-      await this.onCompanyPicked(chatId, data.slice(COMPANY_PREFIX.length));
-      return;
-    }
 
     const approve = data.startsWith(CONFIRM_PREFIX);
     const reject = data.startsWith(REJECT_PREFIX);
@@ -291,6 +297,7 @@ export class TelegramService {
   private async onCompanyPicked(
     chatId: string,
     companiesId: string,
+    messageId = 0,
   ): Promise<void> {
     const waiting = this.awaitingCompany.get(chatId);
     this.awaitingCompany.delete(chatId);
@@ -300,8 +307,20 @@ export class TelegramService {
     const identities = waiting?.identities ?? (await this.callers.identities(chatId));
     const picked = identities.find((i) => i.caller.companiesId === companiesId);
     if (!picked) {
+      if (messageId) await this.api.clearButtons(chatId, messageId);
       await this.api.sendMessage(chatId, NOT_LINKED_TEXT);
       return;
+    }
+
+    // The tap is the only record of which company was chosen, and buttons that
+    // merely vanish read as a swallowed choice. Rewriting the question with its
+    // answer leaves the decision visible in the history where it was made.
+    if (messageId) {
+      await this.api.editText(
+        chatId,
+        messageId,
+        `Компания: ${escapeHtml(picked.companyName)}`,
+      );
     }
 
     if (!waiting) {
