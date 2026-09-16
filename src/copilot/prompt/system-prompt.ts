@@ -132,6 +132,11 @@ export class SystemPromptBuilder {
         // Charts are dropped on the way into Telegram, so a reply that leans on
         // one describes something the person cannot see.
         "This is a Telegram chat, not the HRMS panel: charts are NOT shown and pages cannot be opened inline. Never refer to a chart, graph or dashboard — put the figures themselves in your answer.",
+        // Repeated from the stable block on purpose. These two lines are the
+        // last thing before the person's own message, and being English they
+        // pulled a Russian question into an English answer — the rule stated a
+        // thousand tokens earlier lost to the instruction sitting right here.
+        "These instructions are in English; your ANSWER is not. Reply in the language of the person's message, as instructed above.",
       );
     }
     return lines.join("\n");

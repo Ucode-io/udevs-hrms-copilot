@@ -46,6 +46,12 @@ describe("volatile prompt", () => {
       expect(text()).toContain("user-1");
     });
 
+    it("says the instructions' own language is not the answer's", () => {
+      // Live regression: these English lines are the last thing before the
+      // person's message, and a Russian question came back answered in English.
+      expect(text()).toContain("your ANSWER is not");
+    });
+
     it("forbids pointing at a chart nobody can see", () => {
       // Charts are dropped on the way into Telegram, so a reply that leans on
       // one describes something that is not on screen.
