@@ -17,6 +17,7 @@ const forwarded: Array<{ path: string; body: unknown }> = [];
 const api = {
   sendMessage: jest.fn(async (chatId: string, text: string) => {
     sent.push({ chatId, text });
+    return 100 + sent.length;
   }),
   sendTyping: jest.fn(async () => {}),
   answerCallback: jest.fn(async () => {}),
@@ -207,6 +208,44 @@ describe("a question in a private chat", () => {
       expect.objectContaining({ companiesId: "co-1" }),
       { conversationId: "conv-open", message: "А за август?" },
     );
+  });
+
+  it("shows what it is doing, then rewrites that into the answer", async () => {
+    const { service } = build({
+      identities: [identity("co-1", "Udevs")],
+      chat: () =>
+        stream(
+          { type: "tool_call", toolName: "run_report", toolUseId: "t1", risk: "read" },
+          { type: "tool_call", toolName: "aggregate_items", toolUseId: "t2", risk: "read" },
+          { type: "text_delta", text: "76 опозданий" },
+        ),
+    });
+
+    await service.handleUpdate(ask());
+
+    // One message, not three: the progress line IS the answer once it arrives.
+    expect(sent).toEqual([{ chatId: "777", text: "⏳ Открываю отчёт…" }]);
+    expect(api.editText).toHaveBeenNthCalledWith(1, "777", 101, "⏳ Считаю…");
+    expect(api.editText).toHaveBeenNthCalledWith(2, "777", 101, "76 опозданий", []);
+  });
+
+  it("does not re-edit when the next tool says the same thing", async () => {
+    const { service } = build({
+      identities: [identity("co-1", "Udevs")],
+      chat: () =>
+        stream(
+          { type: "tool_call", toolName: "list_items", toolUseId: "t1", risk: "read" },
+          { type: "tool_call", toolName: "list_items", toolUseId: "t2", risk: "read" },
+          { type: "text_delta", text: "готово" },
+        ),
+    });
+
+    await service.handleUpdate(ask());
+
+    // Only the final rewrite — an edit that changes nothing visible is a
+    // request spent on nothing.
+    expect(api.editText).toHaveBeenCalledTimes(1);
+    expect(api.editText).toHaveBeenCalledWith("777", 101, "готово", []);
   });
 
   it("never lets a failure reach Telegram, which would redeliver forever", async () => {

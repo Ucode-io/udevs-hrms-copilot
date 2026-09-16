@@ -6,7 +6,7 @@ import { ConversationStore } from "../copilot/conversation.store";
 import { CopilotService } from "../copilot/copilot.service";
 import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
 import { CONFIRM_PREFIX, REJECT_PREFIX, escapeHtml, renderAnswer } from "./render";
-import { TelegramApi, type InlineButton } from "./telegram.api";
+import { TelegramApi, splitMessage, type InlineButton } from "./telegram.api";
 import { TelegramCallerService, type ChatIdentity } from "./telegram-caller.service";
 import { routeUpdate } from "./update-router";
 
@@ -36,6 +36,25 @@ const PICK_COMPANY_TEXT =
   "Вы числитесь в нескольких компаниях. По какой отвечать?";
 
 const NOTHING_PENDING_TEXT = "Это действие уже неактуально.";
+
+/**
+ * What the bot says it is doing, by tool.
+ *
+ * Grouped rather than one line per tool: the person waiting wants to know the
+ * bot is working and roughly on what, not which function it picked. An unknown
+ * tool falls back to the generic line instead of leaking its name.
+ */
+const TOOL_LABELS: Array<[RegExp, string]> = [
+  [/^describe_table$/, "⏳ Разбираюсь, где лежат эти данные…"],
+  [/^run_report$/, "⏳ Открываю отчёт…"],
+  [/^aggregate_items$/, "⏳ Считаю…"],
+  [/^list_items$/, "⏳ Смотрю данные…"],
+  [/^(create|update|delete)_item$/, "⏳ Готовлю изменение…"],
+  [/knowledge|article/, "⏳ Ищу в базе знаний…"],
+];
+
+const toolLabel = (toolName: string): string =>
+  TOOL_LABELS.find(([pattern]) => pattern.test(toolName))?.[1] ?? "⏳ Работаю…";
 
 /**
  * The bot half of the Copilot: it owns Telegram's update queue and turns a
@@ -217,15 +236,52 @@ export class TelegramService {
     }
   }
 
+  /**
+   * Consumes a Copilot stream and leaves one message behind.
+   *
+   * The message starts as a progress line and is rewritten into the answer, so
+   * the wait is legible without a second message to scroll past. Progress moves
+   * per tool call — a handful of edits for a whole answer, where streaming the
+   * text itself would mean hundreds, and would only show anything in the last
+   * seconds: the minutes before that are tool calls, not typing.
+   */
   private async deliver(
     chatId: string,
     stream: AsyncGenerator<CopilotStreamEvent>,
   ): Promise<void> {
     const events: CopilotStreamEvent[] = [];
-    for await (const event of stream) events.push(event);
+    let statusId = 0;
+    let shown = "";
+
+    for await (const event of stream) {
+      events.push(event);
+      if (event.type !== "tool_call") continue;
+
+      const label = toolLabel(event.toolName);
+      // Two list_items in a row would otherwise cost an edit that changes
+      // nothing a person can see.
+      if (label === shown) continue;
+      shown = label;
+
+      statusId = statusId
+        ? (await this.api.editText(chatId, statusId, label), statusId)
+        : await this.api.sendMessage(chatId, label);
+    }
 
     const answer = renderAnswer(events, this.config.telegram.webUrl);
-    await this.api.sendMessage(chatId, answer.text, answer.buttons);
+    const parts = splitMessage(answer.text);
+    const head = parts.shift() ?? "…";
+    const headButtons = parts.length === 0 ? answer.buttons : [];
+
+    // The progress line becomes the answer. If the edit fails — an answer
+    // identical to the status, a message too old to edit — the rest still goes
+    // out below, so the person is never left with just "считаю…".
+    if (statusId) await this.api.editText(chatId, statusId, head, headButtons);
+    else await this.api.sendMessage(chatId, head, headButtons);
+
+    if (parts.length > 0) {
+      await this.api.sendMessage(chatId, parts.join("\n\n"), answer.buttons);
+    }
   }
 
   /**

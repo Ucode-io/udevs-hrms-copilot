@@ -63,6 +63,49 @@ export const escapeHtml = (value: string): string =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
+ * The markdown the Copilot actually writes, as Telegram HTML.
+ *
+ * It writes markdown because the panel renders it (CopilotBubble.tsx covers
+ * exactly these constructs). Sent to Telegram untouched, the same reply arrives
+ * with its asterisks showing — so this is not decoration, it is the difference
+ * between "**Каримов Азиз**" and a name.
+ *
+ * Runs AFTER escaping, never before: escaping rewrites & < >, none of which
+ * appear in the markers below, while doing it the other way round would eat the
+ * tags this produces.
+ *
+ * Headings collapse to bold — Telegram has no heading — and a link the client
+ * cannot open becomes its own text, because a bad href does not degrade, it
+ * takes the whole message down with a 400.
+ */
+export const markdownToHtml = (escaped: string, webUrl: string | null): string =>
+  escaped
+    // Headings first: the hashes are line-anchored, so doing this after the
+    // inline pass would leave "### " sitting in front of a <b> run.
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+    .replace(/^(\s*)[-*]\s+/gm, "$1• ")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label: string, href: string) => {
+      const url = linkHref(href, webUrl);
+      return url ? `<a href="${url}">${label}</a>` : label;
+    })
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+/**
+ * A markdown link target Telegram will accept, or null to keep just the label.
+ *
+ * `kb:<guid>` is the Copilot's own way of citing a Knowledge Base article — not
+ * a URL, and a client that is handed one either errors or shows a dead link.
+ */
+const linkHref = (href: string, webUrl: string | null): string | null => {
+  if (/^https?:\/\//i.test(href)) return href;
+  if (href.startsWith("kb:") && webUrl) {
+    return `${webUrl}/knowledge-base/articles/${encodeURIComponent(href.slice(3))}`;
+  }
+  return null;
+};
+
+/**
  * Folds a finished Copilot stream into one Telegram message, as HTML.
  *
  * Deliberately a pure function over the collected events: this is the piece
@@ -153,7 +196,9 @@ export const renderAnswer = (
     }
   }
 
-  const body = [escapeHtml(text.trim()), ...parts].filter(Boolean).join("\n\n");
+  const body = [markdownToHtml(escapeHtml(text.trim()), webUrl), ...parts]
+    .filter(Boolean)
+    .join("\n\n");
   return {
     text: truncated ? `${body}\n\n…ответ получился слишком длинным и обрезан.` : body,
     buttons,

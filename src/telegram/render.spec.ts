@@ -47,6 +47,44 @@ describe("renderAnswer", () => {
     expect(answer.text).toContain("Азиз К.    4");
   });
 
+  describe("markdown the Copilot writes for the panel", () => {
+    // It writes these because CopilotBubble renders them. Sent to Telegram
+    // untouched, the person reads the asterisks instead of the name.
+    it("turns bold, code and bullets into what Telegram understands", () => {
+      const answer = renderAnswer(
+        [text("**Каримов Азиз** опоздал 4 раза\n- фильтр `status`\n- и всё")],
+        WEB,
+      );
+
+      expect(answer.text).toContain("<b>Каримов Азиз</b>");
+      expect(answer.text).toContain("<code>status</code>");
+      expect(answer.text).toContain("• фильтр");
+      expect(answer.text).not.toContain("**");
+    });
+
+    it("collapses a heading to bold, since Telegram has no headings", () => {
+      expect(renderAnswer([text("## Итоги сентября")], WEB).text).toBe(
+        "<b>Итоги сентября</b>",
+      );
+    });
+
+    it("links a cited article through the panel", () => {
+      const answer = renderAnswer([text("см. [Аллерайз](kb:abc-123)")], WEB);
+
+      expect(answer.text).toContain(
+        '<a href="https://hrms.test/knowledge-base/articles/abc-123">Аллерайз</a>',
+      );
+    });
+
+    it("keeps only the label when the link has nowhere to point", () => {
+      // kb: is not a URL. Handing one to Telegram is a 400 that takes the whole
+      // answer with it, so the citation degrades to its own text.
+      const answer = renderAnswer([text("см. [Аллерайз](kb:abc-123)")], null);
+
+      expect(answer.text).toBe("см. Аллерайз");
+    });
+  });
+
   it("escapes what people typed, so one angle bracket cannot 400 the answer", () => {
     const answer = renderAnswer(
       [

@@ -162,6 +162,15 @@ What is different, and deliberate:
 - **Binding still belongs to hickvision.** `/start`, a shared contact and
   anything from a group are forwarded to its `telegram_updates` method
   untouched. Only the transport moved.
+- **Replies are HTML, converted from the markdown the model writes** for the
+  panel — bold, inline code, bullets, headings (flattened to bold) and links.
+  A `kb:<guid>` citation becomes a panel link, or plain text when `HRMS_WEB_URL`
+  is unset: Telegram rejects the whole message over one unusable href.
+- **One message per answer.** It starts as a progress line that follows the tool
+  calls ("Открываю отчёт…") and is rewritten into the answer. Streaming the text
+  instead was considered and skipped: the wait is tool calls, not typing, so
+  streaming would show nothing until the last seconds and cost hundreds of
+  edits against Telegram's rate limit.
 
 Turning it on is four steps, in this order, because the bot has a single update
 queue and hickvision polls it today:

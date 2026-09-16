@@ -42,11 +42,12 @@ export class TelegramApi {
     chatId: string,
     text: string,
     buttons: InlineButton[][] = [],
-  ): Promise<void> {
+  ): Promise<number> {
     const parts = splitMessage(text);
+    let firstId = 0;
     for (const [index, part] of parts.entries()) {
       const last = index === parts.length - 1;
-      await this.call("sendMessage", {
+      const id = await this.call("sendMessage", {
         chat_id: chatId,
         text: part,
         // HTML, not Markdown, and not plain: a table only keeps its columns
@@ -59,7 +60,9 @@ export class TelegramApi {
           ? { reply_markup: { inline_keyboard: toKeyboard(buttons) } }
           : {}),
       });
+      if (!firstId) firstId = id;
     }
+    return firstId;
   }
 
   /**
@@ -88,13 +91,18 @@ export class TelegramApi {
    * other trace, and a picker that simply loses its buttons reads as the bot
    * having swallowed the choice.
    */
-  async editText(chatId: string, messageId: number, text: string): Promise<void> {
+  async editText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    buttons: InlineButton[][] = [],
+  ): Promise<void> {
     await this.call("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text,
       parse_mode: "HTML",
-      reply_markup: { inline_keyboard: [] },
+      reply_markup: { inline_keyboard: toKeyboard(buttons) },
     });
   }
 
@@ -115,14 +123,15 @@ export class TelegramApi {
   // bot's single update queue away from hickvision's poller, which is a
   // deliberate one-time act and not something a booting pod should do.
 
+  /** The new message's id, or 0 — for a call that made none, or that failed. */
   private async call(
     method: string,
     payload: Record<string, unknown>,
-  ): Promise<boolean> {
+  ): Promise<number> {
     const token = this.config.telegram.botToken;
     if (!token) {
       this.logger.warn(`telegram: no bot token, ${method} skipped`);
-      return false;
+      return 0;
     }
 
     try {
@@ -136,14 +145,17 @@ export class TelegramApi {
       if (!res.ok) {
         const body = await res.text();
         this.logger.warn(`telegram ${method} -> ${res.status}: ${body.slice(0, 300)}`);
-        return false;
+        return 0;
       }
-      return true;
+      const body = (await res.json().catch(() => null)) as {
+        result?: { message_id?: number };
+      } | null;
+      return body?.result?.message_id ?? 0;
     } catch (e) {
       this.logger.warn(
         `telegram ${method} failed: ${e instanceof Error ? e.message : String(e)}`,
       );
-      return false;
+      return 0;
     }
   }
 }
