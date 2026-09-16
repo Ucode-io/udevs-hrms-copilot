@@ -67,6 +67,17 @@ describe("routeUpdate", () => {
     ).toEqual({ kind: "switchCompany", chatId: "777" });
   });
 
+  it("reads the keyboard buttons, which arrive as plain text", () => {
+    // A reply keyboard sends its label, not a command. Miss that and tapping
+    // "Заново" becomes a question to the model about what "🔄 Заново" means.
+    expect(routeUpdate({ message: { chat: privateChat, text: "🔄 Заново" } })).toEqual(
+      { kind: "reset", chatId: "777" },
+    );
+    expect(
+      routeUpdate({ message: { chat: privateChat, text: "🏢 Компания" } }),
+    ).toEqual({ kind: "switchCompany", chatId: "777" });
+  });
+
   it("reads a tapped button", () => {
     expect(
       routeUpdate({

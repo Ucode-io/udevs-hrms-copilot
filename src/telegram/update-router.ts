@@ -30,6 +30,16 @@ const START = /^\/start(?:@\S+)?\s*$/i;
 const NEW = /^\/new(?:@\S+)?\s*$/i;
 const COMPANY = /^\/company(?:@\S+)?\s*$/i;
 
+/**
+ * Labels of the keyboard under the input box.
+ *
+ * A reply keyboard sends its label as ordinary text, so these have to be read
+ * here — otherwise tapping "Заново" asks the Copilot what "🔄 Заново" means,
+ * and pays for a model call to find out.
+ */
+export const RESET_BUTTON = "🔄 Заново";
+export const COMPANY_BUTTON = "🏢 Компания";
+
 export const routeUpdate = (update: unknown): RoutedUpdate => {
   const u = update as {
     message?: {
@@ -79,8 +89,10 @@ export const routeUpdate = (update: unknown): RoutedUpdate => {
   const text = String(message.text ?? "").trim();
   if (!text) return { kind: "ignore", chatId, reason: "unsupported" };
   if (START.test(text)) return { kind: "forward" };
-  if (NEW.test(text)) return { kind: "reset", chatId };
-  if (COMPANY.test(text)) return { kind: "switchCompany", chatId };
+  if (NEW.test(text) || text === RESET_BUTTON) return { kind: "reset", chatId };
+  if (COMPANY.test(text) || text === COMPANY_BUTTON) {
+    return { kind: "switchCompany", chatId };
+  }
 
   return { kind: "chat", chatId, text };
 };

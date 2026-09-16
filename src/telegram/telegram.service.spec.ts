@@ -21,10 +21,17 @@ interface Command {
 
 const api = {
   setCommands: jest.fn(async (_commands: Command[]) => {}),
-  sendMessage: jest.fn(async (chatId: string, text: string) => {
-    sent.push({ chatId, text });
-    return 100 + sent.length;
-  }),
+  sendMessage: jest.fn(
+    async (
+      chatId: string,
+      text: string,
+      _buttons: unknown[] = [],
+      _keyboard: string[] = [],
+    ) => {
+      sent.push({ chatId, text });
+      return 100 + sent.length;
+    },
+  ),
   sendTyping: jest.fn(async () => {}),
   answerCallback: jest.fn(async () => {}),
   clearButtons: jest.fn(async () => {}),
@@ -273,6 +280,21 @@ describe("a question in a private chat", () => {
     expect(sent).toEqual([{ chatId: "777", text: "⏳ Открываю отчёт…" }]);
     expect(api.editText).toHaveBeenNthCalledWith(1, "777", 101, "⏳ Считаю…");
     expect(api.editText).toHaveBeenNthCalledWith(2, "777", 101, "76 опозданий", []);
+  });
+
+  it("puts the keyboard up once, not with every answer", async () => {
+    // Telegram keeps a reply keyboard until it is replaced, so re-sending it
+    // would shove it back open every time someone collapsed it.
+    const { service } = build({ identities: [identity("co-1", "Udevs")] });
+
+    await service.handleUpdate(ask());
+    await service.handleUpdate(ask("а за август?"));
+
+    const withKeyboard = api.sendMessage.mock.calls.filter(
+      (call) => (call[3] ?? []).length > 0,
+    );
+    expect(withKeyboard).toHaveLength(1);
+    expect(withKeyboard[0][3]).toEqual(["🔄 Заново", "🏢 Компания"]);
   });
 
   it("does not re-edit when the next tool says the same thing", async () => {

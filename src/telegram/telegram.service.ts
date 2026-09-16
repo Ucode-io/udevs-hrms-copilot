@@ -8,7 +8,7 @@ import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
 import { CONFIRM_PREFIX, REJECT_PREFIX, escapeHtml, renderAnswer } from "./render";
 import { TelegramApi, splitMessage, type InlineButton } from "./telegram.api";
 import { TelegramCallerService, type ChatIdentity } from "./telegram-caller.service";
-import { routeUpdate } from "./update-router";
+import { COMPANY_BUTTON, RESET_BUTTON, routeUpdate } from "./update-router";
 
 /**
  * Idle time after which a chat's Conversation is considered finished.
@@ -103,6 +103,16 @@ export class TelegramService implements OnModuleInit {
     string,
     { text: string; identities: ChatIdentity[]; at: number }
   >();
+
+  /**
+   * Chats that already have the keyboard under their input box.
+   *
+   * ponytail: in-process, like the two maps around it. Telegram keeps the
+   * keyboard until it is replaced, so the cost of forgetting is one redundant
+   * reply_markup on the first answer after a restart — invisible to the person,
+   * and cheaper than a collection to remember it in.
+   */
+  private readonly keyboardShown = new Set<string>();
 
   constructor(
     @Inject(CONFIG) private readonly config: CopilotConfig,
@@ -297,7 +307,7 @@ export class TelegramService implements OnModuleInit {
 
       statusId = statusId
         ? (await this.api.editText(chatId, statusId, label), statusId)
-        : await this.api.sendMessage(chatId, label);
+        : await this.api.sendMessage(chatId, label, [], this.keyboardFor(chatId));
     }
 
     const answer = renderAnswer(events, this.config.telegram.webUrl);
@@ -308,8 +318,17 @@ export class TelegramService implements OnModuleInit {
     // The progress line becomes the answer. If the edit fails — an answer
     // identical to the status, a message too old to edit — the rest still goes
     // out below, so the person is never left with just "считаю…".
+    // An answer with no tool calls never sent a status, so this is the chat's
+    // first message and the keyboard rides on it instead.
     if (statusId) await this.api.editText(chatId, statusId, head, headButtons);
-    else await this.api.sendMessage(chatId, head, headButtons);
+    else {
+      await this.api.sendMessage(
+        chatId,
+        head,
+        headButtons,
+        headButtons.length === 0 ? this.keyboardFor(chatId) : [],
+      );
+    }
 
     if (parts.length > 0) {
       await this.api.sendMessage(chatId, parts.join("\n\n"), answer.buttons);
@@ -417,7 +436,12 @@ export class TelegramService implements OnModuleInit {
       // here. Without it the choice evaporates the moment it is made, and the
       // very next question asks which company all over again.
       await this.store.create(picked.caller, COMPANY_PICKED_TITLE, chatId);
-      await this.api.sendMessage(chatId, "Задайте вопрос.");
+      await this.api.sendMessage(
+        chatId,
+        "Задайте вопрос.",
+        [],
+        this.keyboardFor(chatId),
+      );
       return;
     }
 
@@ -428,7 +452,12 @@ export class TelegramService implements OnModuleInit {
 
   private async onReset(chatId: string): Promise<void> {
     await this.endConversation(chatId);
-    await this.api.sendMessage(chatId, "Начинаю заново. О чём спросить?");
+    await this.api.sendMessage(
+      chatId,
+      "Начинаю заново. О чём спросить?",
+      [],
+      this.keyboardFor(chatId),
+    );
   }
 
   /**
@@ -475,6 +504,20 @@ export class TelegramService implements OnModuleInit {
       },
     ]);
     await this.api.sendMessage(chatId, PICK_COMPANY_TEXT, buttons);
+  }
+
+  /**
+   * The keyboard labels, the first time this chat is answered — nothing after
+   * that.
+   *
+   * Once is enough because Telegram keeps a reply keyboard until something
+   * replaces it, and re-sending one the person has collapsed would push it back
+   * open on every single answer.
+   */
+  private keyboardFor(chatId: string): string[] {
+    if (this.keyboardShown.has(chatId)) return [];
+    this.keyboardShown.add(chatId);
+    return [RESET_BUTTON, COMPANY_BUTTON];
   }
 
   /**
