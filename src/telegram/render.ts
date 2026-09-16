@@ -41,11 +41,32 @@ export interface RenderedAnswer {
  */
 const TABLE_ROW_LIMIT = 15;
 
-/** Columns kept, for the same reason: a phone is about 40 characters wide. */
+/**
+ * Columns kept.
+ *
+ * Four rather than three because the column a question is about is often the
+ * last one: "кто опаздывал" against a table of Сотрудник / Отработано /
+ * Вовремя / Опозданий loses its own answer at three. They fit because the
+ * numeric columns squeeze — see fitWidths.
+ */
 const TABLE_COLUMN_LIMIT = 4;
 
 /** Cell width past which a value is cut, so one long note cannot skew a table. */
 const CELL_WIDTH_LIMIT = 18;
+
+/**
+ * Widest a table line may be.
+ *
+ * Telegram wraps a <pre> line it cannot fit and offers no sideways scroll, and
+ * a wrapped header is worse than a dropped column: the first table shipped put
+ * "Опозданий" on its own line under "Сотрудник", which reads as a fifth row
+ * rather than a fourth heading. Measured against the desktop bubble, which is
+ * narrower than it looks.
+ */
+const TABLE_LINE_LIMIT = 40;
+
+/** Floor for a squeezed column — below this even a number stops being legible. */
+const MIN_COLUMN_WIDTH = 7;
 
 export const CONFIRM_PREFIX = "ok:";
 export const REJECT_PREFIX = "no:";
@@ -239,12 +260,17 @@ const renderTable = (table: CopilotTable): string => {
   const cells = rows.map((row) =>
     columns.map((c) => cut(String(row[c.key] ?? "—"))),
   );
-  const widths = columns.map((c, i) =>
-    Math.max(cut(c.label).length, ...cells.map((r) => r[i].length), 1),
+  const widths = fitWidths(
+    columns.map((c, i) =>
+      Math.max(cut(c.label).length, ...cells.map((r) => r[i].length), 1),
+    ),
   );
 
   const line = (values: string[]): string =>
-    values.map((v, i) => v.padEnd(widths[i])).join("  ").trimEnd();
+    values
+      .map((v, i) => (v.length > widths[i] ? cutTo(v, widths[i]) : v.padEnd(widths[i])))
+      .join("  ")
+      .trimEnd();
 
   const head = [
     table.title,
@@ -269,8 +295,34 @@ const renderTable = (table: CopilotTable): string => {
   ].join("\n");
 };
 
-const cut = (value: string): string =>
-  value.length > CELL_WIDTH_LIMIT ? `${value.slice(0, CELL_WIDTH_LIMIT - 1)}…` : value;
+const cut = (value: string): string => cutTo(value, CELL_WIDTH_LIMIT);
+
+const cutTo = (value: string, width: number): string =>
+  value.length > width ? `${value.slice(0, Math.max(1, width - 1))}…` : value;
+
+/**
+ * Squeezes column widths until the line fits.
+ *
+ * The trailing columns give way first and the first one last: the first column
+ * is who or what a row is about, and a table of truncated names against intact
+ * headings answers nothing. Everything has a floor, so a pathological table
+ * comes out narrow and ugly rather than wrapped and unreadable.
+ */
+const fitWidths = (widths: number[]): number[] => {
+  const fitted = [...widths];
+  const total = (): number =>
+    fitted.reduce((sum, w) => sum + w, 0) + 2 * (fitted.length - 1);
+
+  // Later columns first, first column last — hence the reversed sweep, run
+  // until nothing will give any further.
+  for (const index of [...fitted.keys()].reverse().concat([...fitted.keys()])) {
+    while (total() > TABLE_LINE_LIMIT && fitted[index] > MIN_COLUMN_WIDTH) {
+      fitted[index] -= 1;
+    }
+    if (total() <= TABLE_LINE_LIMIT) break;
+  }
+  return fitted;
+};
 
 /**
  * An in-app link as something Telegram will accept, or null to drop it.

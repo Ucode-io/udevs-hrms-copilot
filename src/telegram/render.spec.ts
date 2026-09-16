@@ -109,6 +109,47 @@ describe("renderAnswer", () => {
     expect(answer.text.match(/<(?!\/?pre>)/g)).toBeNull();
   });
 
+  it("keeps every table line inside the bubble", () => {
+    // The real "посещаемость по сотрудникам" table: its header ran to 50
+    // characters, Telegram wrapped it, and "Опозданий" landed on its own line
+    // under the names where it read as data rather than a heading.
+    const answer = renderAnswer(
+      [
+        {
+          type: "table",
+          table: {
+            id: "t1",
+            title: "Посещаемость по сотрудникам — сентябрь 2026",
+            columns: [
+              { key: "name", label: "Сотрудник" },
+              { key: "worked", label: "Отработано" },
+              { key: "ontime", label: "Вовремя" },
+              { key: "late", label: "Опозданий" },
+              { key: "absent", label: "Отсутствий" },
+            ],
+            rows: [
+              { name: "Aslbek Abduraxmanov", worked: 5, ontime: 1, late: 4, absent: 0 },
+              { name: "Jamoliddin Jamolov", worked: 7, ontime: 0, late: 7, absent: 1 },
+            ],
+            totalCount: 23,
+          },
+        },
+      ],
+      WEB,
+    );
+
+    const block = /<pre>([\s\S]+)<\/pre>/.exec(answer.text)![1];
+    for (const line of block.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(40);
+    }
+    // Names survive the squeeze — a row nobody can identify answers nothing.
+    expect(block).toContain("Jamoliddin");
+    // Four columns, not three: "кто опаздывал" is answered by the last one, and
+    // dropping it would leave the table without the figure that was asked for.
+    expect(block).toContain("Опозда");
+    expect(answer.text).toContain("колонок: 4 из 5");
+  });
+
   it("says when a table was cut short instead of implying it is all of it", () => {
     const answer = renderAnswer(
       [
