@@ -35,11 +35,15 @@ export interface RenderedAnswer {
 }
 
 /**
- * Rows of a table put into a message. Past this the block stops being readable
- * on a phone and starts being a wall — the button to the panel is the honest
- * answer to "show me all 300".
+ * Rows of a table put into a message.
+ *
+ * Generous because the block is collapsible: an expandable blockquote shows a
+ * few lines and opens on a tap, so a long table costs the chat nothing until
+ * someone wants it. The cap now guards the 4096-character message limit rather
+ * than the reader's patience — 40 rows of a 40-column line leave room for the
+ * answer around them.
  */
-const TABLE_ROW_LIMIT = 15;
+const TABLE_ROW_LIMIT = 40;
 
 /**
  * Columns kept.
@@ -290,7 +294,11 @@ const renderTable = (table: CopilotTable): string => {
 
   return [
     escapeHtml(head),
-    `<pre>${escapeHtml(block)}</pre>`,
+    // Collapsible, and monospaced inside it: verified against the live API
+    // rather than assumed, because the same table without <pre> comes out in a
+    // proportional font with its columns gone. The blockquote is what lets a
+    // long result travel in a chat — it shows a few lines and opens on a tap.
+    `<blockquote expandable><pre>${escapeHtml(block)}</pre></blockquote>`,
     ...(hidden.length > 0 ? [escapeHtml(hidden.join(", "))] : []),
   ].join("\n");
 };

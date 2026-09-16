@@ -185,8 +185,8 @@ export const splitMessage = (text: string): string[] => {
 
   const parts: string[] = [];
   let rest = trimmed;
-  // Budget for the </pre> a cut inside the block has to append.
-  const room = MESSAGE_LIMIT - "</pre>".length;
+  // Budget for the closing tags a cut inside a block has to append.
+  const room = MESSAGE_LIMIT - CLOSERS.length;
 
   while (rest.length > room) {
     const window = rest.slice(0, room);
@@ -196,9 +196,11 @@ export const splitMessage = (text: string): string[] => {
     let part = rest.slice(0, at).trim();
     rest = rest.slice(at).trim();
 
-    if (isInsidePre(part)) {
-      part += "</pre>";
-      rest = `<pre>${rest}`;
+    const open = openTags(part);
+    if (open.length > 0) {
+      // Innermost first on the way out, outermost first on the way back in.
+      part += [...open].reverse().map(closerFor).join("");
+      rest = open.map(openerFor).join("") + rest;
     }
     parts.push(part);
   }
@@ -207,7 +209,31 @@ export const splitMessage = (text: string): string[] => {
   return parts;
 };
 
-/** True when a fragment opens a <pre> it never closes. */
-const isInsidePre = (fragment: string): boolean =>
-  (fragment.match(/<pre>/g) ?? []).length >
-  (fragment.match(/<\/pre>/g) ?? []).length;
+/** Block tags a table travels in, outermost first. */
+const BLOCK_TAGS = ["blockquote", "pre"] as const;
+type BlockTag = (typeof BLOCK_TAGS)[number];
+
+/** Worst case a cut has to append: every block closed at once. */
+const CLOSERS = BLOCK_TAGS.map((t) => `</${t}>`).join("");
+
+const openerFor = (tag: BlockTag): string =>
+  tag === "blockquote" ? "<blockquote expandable>" : "<pre>";
+
+const closerFor = (tag: BlockTag): string => `</${tag}>`;
+
+/**
+ * Block tags a fragment leaves open, outermost first.
+ *
+ * An unclosed tag is not cosmetic: Telegram rejects the whole part, so half an
+ * answer disappears with nothing to say why.
+ */
+const openTags = (fragment: string): BlockTag[] => {
+  const stack: BlockTag[] = [];
+  for (const [, closing, tag] of fragment.matchAll(
+    /<(\/?)(blockquote|pre)(?: expandable)?>/g,
+  )) {
+    if (closing) stack.pop();
+    else stack.push(tag as BlockTag);
+  }
+  return stack;
+};

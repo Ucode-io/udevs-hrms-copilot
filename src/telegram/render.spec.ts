@@ -105,8 +105,10 @@ describe("renderAnswer", () => {
     expect(answer.text).toContain("&lt;Азиз&gt; &amp; Co");
     expect(answer.text).toContain("R&amp;D &lt;отдел&gt;");
     expect(answer.text).toContain("&lt;script&gt;");
-    // The only markup left is the block the renderer put there itself.
-    expect(answer.text.match(/<(?!\/?pre>)/g)).toBeNull();
+    // The only markup left is the blocks the renderer put there itself.
+    expect(
+      answer.text.match(/<(?!\/?pre>|blockquote expandable>|\/blockquote>)/g),
+    ).toBeNull();
   });
 
   it("keeps every table line inside the bubble", () => {
@@ -159,7 +161,7 @@ describe("renderAnswer", () => {
             id: "t1",
             title: "Сотрудники",
             columns: [{ key: "name", label: "Имя" }],
-            rows: Array.from({ length: 40 }, (_, i) => ({ name: `Имя ${i}` })),
+            rows: Array.from({ length: 90 }, (_, i) => ({ name: `Имя ${i}` })),
             totalCount: 312,
           },
         },
@@ -167,7 +169,30 @@ describe("renderAnswer", () => {
       WEB,
     );
 
-    expect(answer.text).toContain("показаны 15 из 312");
+    expect(answer.text).toContain("показаны 40 из 312");
+  });
+
+  it("puts the table in a block that can be collapsed", () => {
+    // Verified against the live API: <pre> keeps its columns inside an
+    // expandable blockquote, and the same table without <pre> does not. That
+    // combination is what lets forty rows travel in a chat.
+    const answer = renderAnswer(
+      [
+        {
+          type: "table",
+          table: {
+            id: "t1",
+            title: "Опоздания",
+            columns: [{ key: "name", label: "Сотрудник" }],
+            rows: [{ name: "Азиз К." }],
+          },
+        },
+      ],
+      WEB,
+    );
+
+    expect(answer.text).toContain("<blockquote expandable><pre>");
+    expect(answer.text).toContain("</pre></blockquote>");
   });
 
   it("turns an in-app link into a button against the panel's base url", () => {
@@ -312,6 +337,26 @@ describe("splitMessage", () => {
 
     expect(parts).toHaveLength(3);
     expect(parts.every((p) => p.length <= MESSAGE_LIMIT)).toBe(true);
+  });
+
+  it("closes and reopens BOTH blocks when the split lands inside a table", () => {
+    // A table now travels as <blockquote expandable><pre>…, so a cut has two
+    // tags to repair, innermost first. Miss either and Telegram refuses the
+    // part — half the answer vanishes with nothing to explain it.
+    const rows = `${"w".repeat(99)}\n`.repeat(60);
+    const parts = splitMessage(`<blockquote expandable><pre>${rows}</pre></blockquote>`);
+
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(part.length).toBeLessThanOrEqual(MESSAGE_LIMIT);
+      for (const tag of ["pre", "blockquote"]) {
+        const open = (part.match(new RegExp(`<${tag}( expandable)?>`, "g")) ?? []).length;
+        const close = (part.match(new RegExp(`</${tag}>`, "g")) ?? []).length;
+        expect(open).toBe(close);
+      }
+    }
+    // And the nesting survives: a <pre> outside its blockquote is not a table.
+    expect(parts[1].startsWith("<blockquote expandable><pre>")).toBe(true);
   });
 
   it("closes and reopens a <pre> the split lands inside of", () => {
