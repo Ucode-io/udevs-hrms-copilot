@@ -55,6 +55,7 @@ access to them in `UCODE_SERVICE_API_KEY`.
 | `guid` | UUID | primary key |
 | `user_id` | string | who owns the Conversation |
 | `companies_id` | string | tenant |
+| `telegram_chat_id` | string | the bot chat this Conversation is held in, empty for the panel's own. Add it before turning the bot on: without the column ucode drops the filter that looks it up, and every message in Telegram starts a new Conversation that forgets the last one. |
 | `title` | string | first message, truncated |
 | `thread` | JSON | raw Anthropic messages |
 | `pending_action` | JSON | destructive action awaiting confirmation |
@@ -136,11 +137,65 @@ Check that the `ucode-prod` Vault role's policy grants read on this path before
 the first deploy — the pod annotations authenticate as that role, and a policy
 that does not cover the new path fails the injection rather than the pod.
 
+## The Telegram bot
+
+The same Copilot, reachable in a private chat with the HRMS bot (`src/telegram`).
+A question there runs the same loop, tools and Conversations as one from the
+panel — the module only translates between Telegram and the event stream.
+
+What is different, and deliberate:
+
+- **The bot has no HRMS session to borrow, so its HRMS reads go under the
+  service API key** (`CallerContext.service`). That removes ucode's per-role
+  permission checks on this path: in Telegram an ordinary employee can read
+  anything their Company holds, salaries included. Accepted by the product owner
+  on 2026-09-16 — a borrowed session expires after a day
+  (`AccessTokenExpiresInTime = 1440m`), which would make the bot go blind every
+  night. `companies_id` is still derived from the employee record, never
+  supplied, so the boundary between companies holds.
+- **Private chats only.** An answer in a group is read by everyone in the room,
+  and nothing here narrows what an answer may contain. Groups keep getting
+  notifications and binding, exactly as before.
+- **One Conversation per chat, idle for 12 hours ends it.** A chat has no
+  conversation list to pick from; `/new` ends it sooner, `/company` switches
+  company and starts a fresh one.
+- **Binding still belongs to hickvision.** `/start`, a shared contact and
+  anything from a group are forwarded to its `telegram_updates` method
+  untouched. Only the transport moved.
+
+Turning it on is four steps, in this order, because the bot has a single update
+queue and hickvision polls it today:
+
+1. **deploy hickvision first**, with its `telegram_updates` method but polling
+   still on. The webhook forwards binding updates to that method, so it has to
+   exist *before* the webhook does — otherwise the window between step 2 and
+   step 3 is one where polling is dead and the forward has nothing to call, and
+   group binding is simply down;
+2. deploy this service with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET`;
+3. `node dist/telegram/set-webhook.js https://<host>/telegram/webhook` — from
+   here on `getUpdates` returns 409 for everyone, permanently;
+4. redeploy hickvision with `TELEGRAM_POLLING=0`, which only silences a cron
+   that can no longer do anything but log conflicts.
+
+Do not set `TELEGRAM_POLLING=0` in step 1: between then and step 3 polling is
+the only thing binding groups.
+
+To roll back, `deleteWebhook` and drop `TELEGRAM_POLLING`; polling resumes on the
+next five-minute tick.
+
 ## Known limits
 
 - **Single replica.** The Claim that stops a double-approved action from running
-  twice is in-process (`ConversationStore.claim`). Scaling out needs a shared
-  claim first — the ucode item API has no conditional update to build one from.
+  twice is in-process (`ConversationStore.claim`), and so is the "which company?"
+  question a bot chat is waiting on (`TelegramService.awaitingCompany`). Scaling
+  out needs a shared claim first — the ucode item API has no conditional update
+  to build one from.
+- **The bot answers text only.** The Copilot reads attachments, but a document
+  sent to the bot is refused with a line saying so: pulling a file out of
+  Telegram is a second API and a size limit of its own, and nobody has asked.
+- **Charts are not drawn in Telegram.** A chart becomes the numbers in the text
+  plus a button into the panel. Rendering one means either shipping HR data to
+  an image service or a headless browser in the pod.
 - **Filter operators are limited by the backend**, not by choice: `eq`,
   `contains`, `in`, `gt`, `gte`, `lt`, `lte`. There is no not-equals and no
   is-null, and `eq` on a text column is a substring match.

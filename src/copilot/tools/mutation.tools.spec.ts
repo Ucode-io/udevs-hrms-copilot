@@ -23,6 +23,12 @@ const config: CopilotConfig = {
     clientTypeId: "client-type-1",
     reportsFunction: "reports-fn",
   },
+  telegram: {
+    botToken: null,
+    webhookSecret: null,
+    hickvisionFunction: "hickvision-fn",
+    webUrl: null,
+  },
 };
 
 const ctx: CopilotToolContext = {

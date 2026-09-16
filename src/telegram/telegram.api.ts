@@ -1,0 +1,184 @@
+import { Inject, Injectable, Logger } from "@nestjs/common";
+import { CONFIG, type CopilotConfig } from "../config/configuration";
+
+/** Telegram's own ceiling on one message. Longer text has to be split. */
+export const MESSAGE_LIMIT = 4096;
+
+const API_TIMEOUT_MS = 10_000;
+
+export interface InlineButton {
+  text: string;
+  /** Mutually exclusive with `callbackData`, as Telegram requires. */
+  url?: string;
+  callbackData?: string;
+}
+
+/**
+ * The slice of the Bot API this service uses.
+ *
+ * Hand-rolled rather than a bot framework: the framework's job is routing and
+ * an update loop, and both of those live elsewhere here — routing in
+ * TelegramService, the update loop in Telegram's own webhook. What would be
+ * left of the library is four fetch calls.
+ *
+ * Nothing here throws. A notification that fails is not a reason to fail the
+ * answer that produced it, and every caller is reacting to a webhook that
+ * Telegram will not retry usefully anyway.
+ */
+@Injectable()
+export class TelegramApi {
+  private readonly logger = new Logger(TelegramApi.name);
+
+  constructor(@Inject(CONFIG) private readonly config: CopilotConfig) {}
+
+  /**
+   * Sends text, splitting it when it exceeds Telegram's limit.
+   *
+   * Buttons ride on the LAST part only: they belong to the end of an answer,
+   * and repeating them under every chunk would offer the same action three
+   * times.
+   */
+  async sendMessage(
+    chatId: string,
+    text: string,
+    buttons: InlineButton[][] = [],
+  ): Promise<void> {
+    const parts = splitMessage(text);
+    for (const [index, part] of parts.entries()) {
+      const last = index === parts.length - 1;
+      await this.call("sendMessage", {
+        chat_id: chatId,
+        text: part,
+        // HTML, not Markdown, and not plain: a table only keeps its columns
+        // inside <pre>. Markdown would be the worse trade — an underscore in a
+        // name breaks it, and there is no escaping story as small as the three
+        // characters HTML needs. Everything in `text` was escaped by render.ts;
+        // that escaping and this flag have to travel together.
+        parse_mode: "HTML",
+        ...(last && buttons.length > 0
+          ? { reply_markup: { inline_keyboard: toKeyboard(buttons) } }
+          : {}),
+      });
+    }
+  }
+
+  /**
+   * The "typing…" bubble. Telegram clears it after ~5 seconds, so a long answer
+   * has to keep saying it — see TelegramService, which re-sends on a timer.
+   */
+  async sendTyping(chatId: string): Promise<void> {
+    await this.call("sendChatAction", { chat_id: chatId, action: "typing" });
+  }
+
+  /**
+   * Closes the spinner on a tapped inline button. Telegram spins it for a few
+   * seconds otherwise, which reads as the bot having missed the tap.
+   */
+  async answerCallback(callbackId: string, text?: string): Promise<void> {
+    await this.call("answerCallbackQuery", {
+      callback_query_id: callbackId,
+      ...(text ? { text, show_alert: false } : {}),
+    });
+  }
+
+  /**
+   * Strips the buttons off a message that has been acted on, so a confirmation
+   * card cannot be tapped a second time and a company picker stops inviting a
+   * choice that has already been made.
+   */
+  async clearButtons(chatId: string, messageId: number): Promise<void> {
+    await this.call("editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+
+  // Registering the webhook lives in set-webhook.ts, not here: it takes the
+  // bot's single update queue away from hickvision's poller, which is a
+  // deliberate one-time act and not something a booting pod should do.
+
+  private async call(
+    method: string,
+    payload: Record<string, unknown>,
+  ): Promise<boolean> {
+    const token = this.config.telegram.botToken;
+    if (!token) {
+      this.logger.warn(`telegram: no bot token, ${method} skipped`);
+      return false;
+    }
+
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      });
+
+      if (!res.ok) {
+        const body = await res.text();
+        this.logger.warn(`telegram ${method} -> ${res.status}: ${body.slice(0, 300)}`);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      this.logger.warn(
+        `telegram ${method} failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return false;
+    }
+  }
+}
+
+const toKeyboard = (buttons: InlineButton[][]): unknown[][] =>
+  buttons.map((row) =>
+    row.map((b) =>
+      b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.callbackData },
+    ),
+  );
+
+/**
+ * Splits text into Telegram-sized parts, preferring a paragraph break, then a
+ * line break, then a hard cut.
+ *
+ * The preference matters because of what the long answers here look like: a
+ * monospaced table inside <pre>. Cutting one mid-line leaves a column split
+ * across two messages; cutting between lines does not.
+ *
+ * A cut that lands inside the block is repaired rather than avoided: an
+ * unclosed <pre> is not a cosmetic problem, Telegram rejects the part outright
+ * and the person loses half the answer with nothing to explain it.
+ */
+export const splitMessage = (text: string): string[] => {
+  const trimmed = text.trim() || "…";
+  if (trimmed.length <= MESSAGE_LIMIT) return [trimmed];
+
+  const parts: string[] = [];
+  let rest = trimmed;
+  // Budget for the </pre> a cut inside the block has to append.
+  const room = MESSAGE_LIMIT - "</pre>".length;
+
+  while (rest.length > room) {
+    const window = rest.slice(0, room);
+    const cut = Math.max(window.lastIndexOf("\n\n"), window.lastIndexOf("\n"));
+    const at = cut > room / 2 ? cut : room;
+
+    let part = rest.slice(0, at).trim();
+    rest = rest.slice(at).trim();
+
+    if (isInsidePre(part)) {
+      part += "</pre>";
+      rest = `<pre>${rest}`;
+    }
+    parts.push(part);
+  }
+
+  if (rest) parts.push(rest);
+  return parts;
+};
+
+/** True when a fragment opens a <pre> it never closes. */
+const isInsidePre = (fragment: string): boolean =>
+  (fragment.match(/<pre>/g) ?? []).length >
+  (fragment.match(/<\/pre>/g) ?? []).length;

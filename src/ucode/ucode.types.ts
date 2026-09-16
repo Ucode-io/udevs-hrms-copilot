@@ -94,4 +94,23 @@ export interface CallerContext {
   projectId: string;
   /** The caller's raw bearer token, forwarded to ucode verbatim. */
   token: string;
+  /**
+   * The Caller reached us through the Telegram bot and has no token of their
+   * own, so HRMS data is read under the service API key.
+   *
+   * ⚠️ THIS REMOVES UCODE'S PERMISSION CHECKS FOR THIS CALLER. Everywhere else
+   * the person's own bearer decides what they may read, and ucode enforces it
+   * per role (admin gateway, object_v2.go: `role_id_from_token`). The service
+   * key carries the project admin's role instead, so on this path an ordinary
+   * employee can read anything their Company has — including other people's
+   * salaries. Deliberate, and accepted by the product owner on 2026-09-16:
+   * Telegram has no HRMS session to borrow, and a session only lasts a day
+   * (AccessTokenExpiresInTime = 1440m), which would make the bot go blind every
+   * night. `companiesId` is still derived, never supplied, so the leak stops at
+   * the Company boundary.
+   *
+   * If this ever needs tightening, the place is here — a self-scope filter
+   * forced into every tool query, not a sentence in the system prompt.
+   */
+  service?: boolean;
 }

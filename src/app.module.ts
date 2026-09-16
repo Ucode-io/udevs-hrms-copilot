@@ -3,6 +3,7 @@ import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import { UcodeModule } from "./ucode/ucode.module";
 import { CopilotModule } from "./copilot/copilot.module";
+import { TelegramModule } from "./telegram/telegram.module";
 import { HealthController } from "./health.controller";
 
 @Module({
@@ -12,6 +13,7 @@ import { HealthController } from "./health.controller";
     ThrottlerModule.forRoot([{ name: "default", ttl: 60_000, limit: 60 }]),
     UcodeModule,
     CopilotModule,
+    TelegramModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

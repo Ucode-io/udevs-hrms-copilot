@@ -99,6 +99,22 @@ vault:
 #                            down.
 #   COPILOT_MODEL            claude-sonnet-5
 #   COPILOT_EFFORT           high
+#   TELEGRAM_BOT_TOKEN       the HRMS bot, same token the notifications are sent
+#                            with. Absent means the bot surface is off and the
+#                            panel is unaffected.
+#   TELEGRAM_WEBHOOK_SECRET  any long random string. Handed to Telegram by
+#                            set-webhook.ts and echoed back on every delivery —
+#                            the webhook URL is public, so this header is the
+#                            only proof an update came from Telegram.
+#   HRMS_WEB_URL             https://hrms.u-code.io — base for the "open in
+#                            HRMS" buttons. Without it those buttons are
+#                            dropped, because Telegram refuses a relative url.
+#
+# Turning the bot on is a deliberate sequence, NOT a deploy: the bot has one
+# update queue, and hickvision polls it today for group and phone binding.
+# hickvision ships FIRST (it gains the telegram_updates method the webhook
+# forwards to), then this service, then set-webhook.ts, and only then
+# hickvision again with TELEGRAM_POLLING=0. See README, "The Telegram bot".
 #
 # PORT stays below on purpose: it has to agree with the two port numbers in
 # this same file, and a mismatch is silent — the pod starts and the ingress

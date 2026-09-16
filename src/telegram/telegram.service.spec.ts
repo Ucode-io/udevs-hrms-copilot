@@ -1,0 +1,223 @@
+import { TelegramService } from "./telegram.service";
+import type { CopilotConfig } from "../config/configuration";
+import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
+
+const config = {
+  telegram: {
+    botToken: "bot-token",
+    webhookSecret: "secret",
+    hickvisionFunction: "udevs-hrms-hickvision",
+    webUrl: "https://hrms.test",
+  },
+} as CopilotConfig;
+
+const sent: Array<{ chatId: string; text: string }> = [];
+const forwarded: Array<{ path: string; body: unknown }> = [];
+
+const api = {
+  sendMessage: jest.fn(async (chatId: string, text: string) => {
+    sent.push({ chatId, text });
+  }),
+  sendTyping: jest.fn(async () => {}),
+  answerCallback: jest.fn(async () => {}),
+  clearButtons: jest.fn(async () => {}),
+};
+
+const ucode = {
+  request: jest.fn(async (_ctx, _method, path: string, body: unknown) => {
+    forwarded.push({ path, body });
+    return {};
+  }),
+};
+
+const identity = (companiesId: string, companyName: string) => ({
+  caller: {
+    userId: `user-${companiesId}`,
+    companiesId,
+    projectId: "project-1",
+    token: "",
+    service: true,
+  },
+  companyName,
+});
+
+const stream = async function* (
+  ...events: CopilotStreamEvent[]
+): AsyncGenerator<CopilotStreamEvent> {
+  for (const event of events) yield event;
+};
+
+const build = (overrides: {
+  identities?: ReturnType<typeof identity>[];
+  open?: unknown;
+  chat?: () => AsyncGenerator<CopilotStreamEvent>;
+}) => {
+  const callers = {
+    identities: jest.fn(async () => overrides.identities ?? []),
+  };
+  const store = {
+    findActiveByChat: jest.fn(async () => overrides.open ?? null),
+    create: jest.fn(async () => ({ id: "conv-1" })),
+    load: jest.fn(),
+    save: jest.fn(),
+  };
+  const copilot = {
+    streamChat: jest.fn(
+      overrides.chat ?? (() => stream({ type: "text_delta", text: "ответ" })),
+    ),
+    streamConfirm: jest.fn(),
+  };
+
+  const service = new TelegramService(
+    config,
+    api as never,
+    callers as never,
+    copilot as never,
+    store as never,
+    ucode as never,
+  );
+  return { service, callers, store, copilot };
+};
+
+beforeEach(() => {
+  sent.length = 0;
+  forwarded.length = 0;
+  jest.clearAllMocks();
+});
+
+describe("binding updates", () => {
+  // The path that replaced a five-minute poll. If it breaks, "I added the bot
+  // and nothing happened" comes back with nothing in any log to explain it.
+  it("hands a group membership change to hickvision untouched", async () => {
+    const { service, copilot } = build({});
+    const update = { my_chat_member: { chat: { id: -100500, type: "supergroup" } } };
+
+    await service.handleUpdate(update);
+
+    expect(forwarded).toEqual([
+      {
+        path: "/v2/invoke_function/udevs-hrms-hickvision",
+        body: { data: { method: "telegram_updates", data: { update } } },
+      },
+    ]);
+    expect(copilot.streamChat).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  it("forwards /start rather than answering it", async () => {
+    const { service, copilot } = build({});
+
+    await service.handleUpdate({
+      message: { chat: { id: 777, type: "private" }, text: "/start" },
+    });
+
+    expect(forwarded).toHaveLength(1);
+    expect(copilot.streamChat).not.toHaveBeenCalled();
+  });
+});
+
+describe("a question in a private chat", () => {
+  const ask = (text = "Сколько у меня отпуска?") => ({
+    message: { chat: { id: 777, type: "private" }, text },
+  });
+
+  it("is refused when the chat belongs to nobody in HRMS", async () => {
+    const { service, copilot } = build({ identities: [] });
+
+    await service.handleUpdate(ask());
+
+    expect(copilot.streamChat).not.toHaveBeenCalled();
+    expect(sent[0].text).toContain("/start");
+  });
+
+  it("runs as the one employee behind the chat", async () => {
+    const { service, copilot, store } = build({
+      identities: [identity("co-1", "Udevs")],
+    });
+
+    await service.handleUpdate(ask());
+
+    expect(store.create).toHaveBeenCalledWith(
+      expect.objectContaining({ companiesId: "co-1" }),
+      "Сколько у меня отпуска?",
+      "777",
+    );
+    expect(copilot.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ companiesId: "co-1", service: true }),
+      { conversationId: "conv-1", message: "Сколько у меня отпуска?" },
+    );
+    expect(sent).toEqual([{ chatId: "777", text: "ответ" }]);
+  });
+
+  it("asks which company when the person works for two", async () => {
+    const { service, copilot } = build({
+      identities: [identity("co-1", "Udevs"), identity("co-2", "U-Code")],
+    });
+
+    await service.handleUpdate(ask());
+
+    // Answering for one of them silently is the bug the unique-index migration
+    // was written about.
+    expect(copilot.streamChat).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      "777",
+      expect.stringContaining("нескольких компаниях"),
+      [
+        [{ text: "Udevs", callbackData: "co:co-1" }],
+        [{ text: "U-Code", callbackData: "co:co-2" }],
+      ],
+    );
+  });
+
+  it("runs the held question once a company is picked", async () => {
+    const { service, copilot } = build({
+      identities: [identity("co-1", "Udevs"), identity("co-2", "U-Code")],
+    });
+    await service.handleUpdate(ask());
+
+    await service.handleUpdate({
+      callback_query: {
+        id: "cb1",
+        data: "co:co-2",
+        message: { chat: { id: 777, type: "private" }, message_id: 9 },
+      },
+    });
+
+    expect(copilot.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ companiesId: "co-2" }),
+      { conversationId: "conv-1", message: "Сколько у меня отпуска?" },
+    );
+    // The picker is spent — leaving it live invites a second, contradictory choice.
+    expect(api.clearButtons).toHaveBeenCalledWith("777", 9);
+  });
+
+  it("continues the Conversation the chat is already in", async () => {
+    const { service, copilot, store } = build({
+      identities: [identity("co-1", "Udevs"), identity("co-2", "U-Code")],
+      open: { id: "conv-open" },
+    });
+
+    await service.handleUpdate(ask("А за август?"));
+
+    // No second "which company?": the open Conversation already carries it.
+    expect(store.create).not.toHaveBeenCalled();
+    expect(copilot.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ companiesId: "co-1" }),
+      { conversationId: "conv-open", message: "А за август?" },
+    );
+  });
+
+  it("never lets a failure reach Telegram, which would redeliver forever", async () => {
+    const { service } = build({
+      identities: [identity("co-1", "Udevs")],
+      chat: () => {
+        throw new Error("model exploded");
+      },
+    });
+
+    await expect(service.handleUpdate(ask())).resolves.toBeUndefined();
+    // And the person is told, rather than left watching a "typing…" bubble that
+    // never resolves into anything.
+    expect(sent[0].text).toContain("Что-то пошло не так");
+  });
+});

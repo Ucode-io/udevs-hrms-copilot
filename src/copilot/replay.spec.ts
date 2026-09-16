@@ -16,6 +16,7 @@ const conversation = (
   id: "c1",
   userId: "u1",
   companiesId: "co1",
+  telegramChatId: null,
   title: "t",
   thread,
   pendingAction: null,

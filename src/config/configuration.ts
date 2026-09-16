@@ -28,6 +28,28 @@ export interface CopilotConfig {
     clientTypeId: string;
     reportsFunction: string;
   };
+  telegram: {
+    /**
+     * The HRMS bot's token. Absent means the bot half of this service is off —
+     * the webhook route then refuses rather than half-working, and the panel is
+     * unaffected.
+     */
+    botToken: string | null;
+    /**
+     * Shared with Telegram through setWebhook and echoed back by it on every
+     * call as X-Telegram-Bot-Api-Secret-Token. The webhook URL is public, so
+     * this is the only thing separating Telegram from anyone who guesses it.
+     */
+    webhookSecret: string | null;
+    /** ucode cloud function owning group and phone binding. */
+    hickvisionFunction: string;
+    /**
+     * Base URL of the HRMS panel, used to turn the Copilot's in-app links
+     * ("/employees/<guid>") into buttons. Without it those links are dropped
+     * rather than sent as a path Telegram cannot open.
+     */
+    webUrl: string | null;
+  };
 }
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -91,6 +113,15 @@ export const loadConfig = (): CopilotConfig => {
         "1c435896-2f12-4b61-a684-62ad1d2307d1",
       ),
       reportsFunction: str("HRMS_REPORTS_FUNCTION", "udevs-hrms-reports"),
+    },
+    telegram: {
+      botToken: optional("TELEGRAM_BOT_TOKEN"),
+      webhookSecret: optional("TELEGRAM_WEBHOOK_SECRET"),
+      hickvisionFunction: str(
+        "HRMS_HICKVISION_FUNCTION",
+        "udevs-hrms-hickvision",
+      ),
+      webUrl: optional("HRMS_WEB_URL")?.replace(/\/+$/, "") ?? null,
     },
   };
 };

@@ -65,8 +65,9 @@ _Avoid_: Upload, document, file input
 ### Who is asking
 
 **Caller**:
-The HRMS user whose credentials the Copilot acts under. It never has authority the
-Caller lacks.
+The HRMS user the Copilot acts as. From the panel it acts under their credentials and
+never has authority they lack; from the Bot Chat there are no credentials to act under,
+and it acts under the service key instead — see Bot Chat.
 _Avoid_: Client, requester, principal
 
 **Company**:
@@ -78,6 +79,18 @@ _Avoid_: Organization, tenant, account, workspace
 A person employed by a Company. Stored among general users, and distinguished from
 them only by their role.
 _Avoid_: User, staff, worker, member
+
+**Bot Chat**:
+A private Telegram chat where the Copilot is reached instead of the panel. The chat id
+is the identification — it was written into the Employee's record by a path that proved
+the person — and, because Telegram carries no HRMS session, HRMS data is read under the
+service key. That is the one place where a Caller reads more than their role allows.
+_Avoid_: Bot, Telegram bot, chat
+
+**Company Prompt**:
+The question a Bot Chat asks when one Telegram account belongs to several Employees —
+one per Company. Answered once per Conversation, with buttons, never guessed.
+_Avoid_: Company picker, tenant switch
 
 ### Knowing the data
 
