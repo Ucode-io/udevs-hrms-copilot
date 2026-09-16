@@ -14,7 +14,13 @@ const config = {
 const sent: Array<{ chatId: string; text: string }> = [];
 const forwarded: Array<{ path: string; body: unknown }> = [];
 
+interface Command {
+  command: string;
+  description: string;
+}
+
 const api = {
+  setCommands: jest.fn(async (_commands: Command[]) => {}),
   sendMessage: jest.fn(async (chatId: string, text: string) => {
     sent.push({ chatId, text });
     return 100 + sent.length;
@@ -85,6 +91,22 @@ beforeEach(() => {
   sent.length = 0;
   forwarded.length = 0;
   jest.clearAllMocks();
+});
+
+describe("the command menu", () => {
+  it("publishes every command the bot answers", async () => {
+    // Without this Telegram shows no "/" hints at all, and a command nobody
+    // can discover may as well not exist — which is how /company went unused.
+    const { service } = build({});
+    await service.onModuleInit();
+
+    const published = api.setCommands.mock.calls[0][0];
+    expect(published.map((c) => c.command).sort()).toEqual([
+      "company",
+      "new",
+      "start",
+    ]);
+  });
 });
 
 describe("binding updates", () => {

@@ -119,6 +119,20 @@ export class TelegramApi {
     });
   }
 
+  /**
+   * Publishes the command list, which is what puts commands in the "/" menu.
+   *
+   * Unlike the webhook, this is safe to do at boot: it is idempotent, it takes
+   * nothing away from anyone, and tying it to startup is what keeps the menu
+   * honest — a command added in code and forgotten here is a command nobody
+   * discovers.
+   */
+  async setCommands(
+    commands: Array<{ command: string; description: string }>,
+  ): Promise<void> {
+    await this.call("setMyCommands", { commands });
+  }
+
   // Registering the webhook lives in set-webhook.ts, not here: it takes the
   // bot's single update queue away from hickvision's poller, which is a
   // deliberate one-time act and not something a booting pod should do.

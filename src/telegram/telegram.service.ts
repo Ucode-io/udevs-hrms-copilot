@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { CONFIG, type CopilotConfig } from "../config/configuration";
 import { UcodeClient } from "../ucode/ucode.client";
 import type { CallerContext } from "../ucode/ucode.types";
@@ -57,6 +57,20 @@ const toolLabel = (toolName: string): string =>
   TOOL_LABELS.find(([pattern]) => pattern.test(toolName))?.[1] ?? "⏳ Работаю…";
 
 /**
+ * The "/" menu.
+ *
+ * Every command the bot answers belongs here — a command that works but is not
+ * listed is one nobody finds. `/start` is handled by hickvision rather than by
+ * this service, and is listed all the same: the menu belongs to the bot, not to
+ * whichever service happens to serve a given command.
+ */
+const COMMANDS = [
+  { command: "new", description: "Начать разговор заново" },
+  { command: "company", description: "Переключить компанию" },
+  { command: "start", description: "Привязать чат к своей карточке в HRMS" },
+];
+
+/**
  * The bot half of the Copilot: it owns Telegram's update queue and turns a
  * message in a private chat into the same Copilot run the panel gets.
  *
@@ -66,7 +80,7 @@ const toolLabel = (toolName: string): string =>
  * mode to debug.
  */
 @Injectable()
-export class TelegramService {
+export class TelegramService implements OnModuleInit {
   private readonly logger = new Logger(TelegramService.name);
 
   /**
@@ -90,6 +104,16 @@ export class TelegramService {
     private readonly store: ConversationStore,
     private readonly ucode: UcodeClient,
   ) {}
+
+  /**
+   * Publishes the command menu on the way up, so it can never drift from the
+   * commands this service actually answers. Failure is logged and no more: a
+   * missing menu is a discoverability problem, not a reason to refuse to boot.
+   */
+  async onModuleInit(): Promise<void> {
+    if (!this.config.telegram.botToken) return;
+    await this.api.setCommands(COMMANDS);
+  }
 
   /**
    * Handles one update. Never throws: Telegram retries a failed webhook with
