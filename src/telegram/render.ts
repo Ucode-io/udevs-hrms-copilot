@@ -17,7 +17,7 @@ import type {
 const ERROR_TEXT: Partial<Record<CopilotErrorCode, string>> = {
   rate_limited: "Ещё отвечаю на прошлый вопрос. Подождите немного.",
   timeout: "Не успел ответить вовремя. Попробуйте спросить короче.",
-  unavailable: "Копилот сейчас недоступен. Сообщите администратору.",
+  unavailable: "AI чат сейчас недоступен. Сообщите администратору.",
   forbidden: "Нет доступа к этим данным.",
   permission_denied: "Нет прав на это действие.",
   not_found: "Не нашёл.",
