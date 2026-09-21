@@ -576,7 +576,6 @@ const EMPLOYEE_WORK_TABLE = "employee_works";
 const WORK_COLUMNS = [
   "employment_types_id",
   "departments_id",
-  "divisions_id",
   "locations_id",
   "positions_id",
   "experience_levels_id",
@@ -634,8 +633,8 @@ const TABLE_NOUNS: Record<
   absence_policies: { nom: "политика отсутствий", acc: "политику отсутствий", ending: "а" },
   departments: { nom: "отдел", acc: "отдел", ending: "" },
   positions: { nom: "должность", acc: "должность", ending: "а" },
-  divisions: { nom: "подразделение", acc: "подразделение", ending: "о" },
-  locations: { nom: "локация", acc: "локацию", ending: "а" },
+  locations: { nom: "филиал", acc: "филиал", ending: "" },
+  regions: { nom: "регион", acc: "регион", ending: "" },
   employment_types: { nom: "тип занятости", acc: "тип занятости", ending: "" },
   experience_levels: { nom: "уровень опыта", acc: "уровень опыта", ending: "" },
   skills: { nom: "навык", acc: "навык", ending: "" },
