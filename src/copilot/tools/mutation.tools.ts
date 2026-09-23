@@ -505,11 +505,25 @@ export class CopilotMutationTools implements CopilotToolGroup {
     }
   }
 
+  /**
+   * The one gate every mutation passes through.
+   *
+   * Read-only tables are refused here rather than warned about in a Hint,
+   * because the damage is silent: a shift written outside its series, a survey
+   * whose body became an object, a laptop reassigned with no movement history.
+   * None of those fail loudly — the row lands and the page shows it wrong.
+   */
   private assertTable(value: unknown): string {
     const table = requireString(value, "table");
     if (!this.catalog.allows(table)) {
       throw new CopilotToolError(
         `Table "${table}" is not available to the Copilot. Available tables: ${this.catalog.slugs().join(", ")}`,
+      );
+    }
+    const entry = this.catalog.table(table);
+    if (entry?.readOnly) {
+      throw new CopilotToolError(
+        `"${entry.label}" can be read but not changed from the Copilot: ${entry.readOnlyReason}`,
       );
     }
     return table;

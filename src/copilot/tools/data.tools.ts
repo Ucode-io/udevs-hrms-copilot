@@ -161,6 +161,12 @@ export class CopilotDataTools implements CopilotToolGroup {
               ...(f.isSearch ? { searchable: true } : {}),
               ...(f.required ? { required: true } : {}),
             })),
+            // Stated up front rather than left to a failed write: the model
+            // should plan around a closed table, not discover it by being
+            // refused halfway through an answer.
+            ...(entry?.readOnly
+              ? { writable: false, whyNotWritable: entry.readOnlyReason }
+              : {}),
             importantNotes: this.hintsFor(table),
             filterOperators: {
               supported: FILTER_OPS,
