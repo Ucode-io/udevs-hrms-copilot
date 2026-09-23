@@ -94,6 +94,8 @@ vault:
 #                            down.
 #   COPILOT_MODEL            claude-sonnet-5
 #   COPILOT_EFFORT           high
+#   BILLING_SERVICE_SECRET   shared with udevs-hrms-reports; signs AI usage records
+#                            (billing_ai_usage_record). Same value in both places.
 #
 # PORT stays below on purpose: it has to agree with the two port numbers in
 # this same file, and a mismatch is silent — the pod starts and the ingress

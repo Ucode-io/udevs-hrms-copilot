@@ -52,6 +52,8 @@ export class CopilotController {
     action_expired: "That action has expired. Please try again.",
     timeout: "The Copilot took too long to respond. Please try again.",
     unavailable: "The Copilot is unavailable. Please tell your administrator.",
+    quota_exceeded:
+      "The company's AI token allowance for this period is used up. Ask your administrator to add a token pack.",
     internal: "Something went wrong. Please try again.",
   };
 

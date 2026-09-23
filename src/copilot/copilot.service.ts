@@ -6,6 +6,7 @@ import type { CallerContext } from "../ucode/ucode.types";
 import { attachmentBlocks } from "./attachment";
 import { ConversationStore, type Conversation } from "./conversation.store";
 import { CopilotConcurrencyService } from "./copilot-concurrency.service";
+import { BillingQuotaService } from "./billing-quota.service";
 import { SystemPromptBuilder } from "./prompt/system-prompt";
 import { projectThread } from "./replay";
 import { CopilotToolRegistry } from "./tools/tool-registry.service";
@@ -69,6 +70,7 @@ export class CopilotService {
     private readonly registry: CopilotToolRegistry,
     private readonly prompts: SystemPromptBuilder,
     private readonly concurrency: CopilotConcurrencyService,
+    private readonly quota: BillingQuotaService,
   ) {
     this.anthropic = config.anthropicApiKey
       ? new Anthropic({ apiKey: config.anthropicApiKey })
@@ -85,7 +87,9 @@ export class CopilotService {
     caller: CallerContext,
     dto: CopilotChatDto,
   ): AsyncGenerator<CopilotStreamEvent> {
-    yield* this.withSlot(caller, this.chatStream(caller, dto));
+    yield* this.withSlot(caller, this.chatStream(caller, dto), {
+      route: dto.context?.route ?? null,
+    });
   }
 
   async *streamConfirm(
@@ -144,7 +148,15 @@ export class CopilotService {
   private async *withSlot(
     caller: CallerContext,
     inner: AsyncGenerator<CopilotStreamEvent>,
+    meta: { route: string | null } = { route: null },
   ): AsyncGenerator<CopilotStreamEvent> {
+    // Billing gate first: a company past its AI allowance (or unpaid) gets one
+    // clear refusal instead of a slot, and nothing is sent to the model.
+    const quota = await this.quota.check(caller);
+    if (!quota.allowed) {
+      yield this.quota.refusal(quota);
+      return;
+    }
     if (!this.concurrency.tryAcquire(caller.userId)) {
       yield {
         type: "error",
@@ -154,10 +166,18 @@ export class CopilotService {
       };
       return;
     }
+    // The meter sums the turn's `usage` events and reports them once in
+    // `finally` — that also covers a client that disconnected mid-answer, whose
+    // tokens Anthropic billed all the same.
+    const meter = this.quota.meter(caller, meta.route);
     try {
-      yield* inner;
+      for await (const event of inner) {
+        meter.observe(event);
+        yield event;
+      }
     } finally {
       this.concurrency.release(caller.userId);
+      meter.flush();
     }
   }
 
@@ -336,6 +356,10 @@ export class CopilotService {
 
     let inputTokens = 0;
     let outputTokens = 0;
+    // Cache reads and writes are billed too (at their own rates); the billing
+    // quota counts them, so they are metered alongside input/output.
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
     /** Whether any text has been streamed for this message yet. */
     let wroteText = false;
 
@@ -352,6 +376,8 @@ export class CopilotService {
           conversation,
           inputTokens,
           outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
           this.timedOut(
             `loop budget of ${LOOP_DEADLINE_MS}ms spent after ${turn} turn(s)`,
           ),
@@ -411,6 +437,8 @@ export class CopilotService {
             conversation,
             inputTokens,
             outputTokens,
+            cacheCreationTokens,
+            cacheReadTokens,
             this.timedOut(
               `turn ${turn + 1} ran past its ${budget}ms stream budget (${Date.now() - startedAt}ms elapsed, ${wroteText ? "text had started" : "no text yet"})`,
             ),
@@ -420,7 +448,13 @@ export class CopilotService {
         const mapped = this.mapAnthropicError(e);
         if (!mapped) throw e;
         this.logger.warn(`Copilot stream failed: ${mapped.log}`);
-        yield* this.stop(conversation, inputTokens, outputTokens, mapped.event);
+        yield* this.stop(
+          conversation,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          mapped.event);
         return;
       } finally {
         cancel();
@@ -428,6 +462,8 @@ export class CopilotService {
 
       inputTokens += final.usage.input_tokens;
       outputTokens += final.usage.output_tokens;
+      cacheCreationTokens += final.usage.cache_creation_input_tokens ?? 0;
+      cacheReadTokens += final.usage.cache_read_input_tokens ?? 0;
 
       // Persist a redacted copy: a tool_use input can carry something sensitive
       // a person typed, and the Thread is stored and replayed. The untouched
@@ -441,7 +477,13 @@ export class CopilotService {
 
       if (final.stop_reason !== "tool_use") {
         await this.store.save(conversation);
-        yield { type: "usage", inputTokens, outputTokens };
+        yield {
+          type: "usage",
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+        };
         yield {
           type: "message_complete",
           messageId,
@@ -455,7 +497,13 @@ export class CopilotService {
       );
       if (!toolUse) {
         await this.store.save(conversation);
-        yield { type: "usage", inputTokens, outputTokens };
+        yield {
+          type: "usage",
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+        };
         yield { type: "message_complete", messageId, stopReason: "end_turn" };
         return;
       }
@@ -502,7 +550,13 @@ export class CopilotService {
           summary: null,
           error: null,
         });
-        yield { type: "usage", inputTokens, outputTokens };
+        yield {
+          type: "usage",
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+        };
         yield { type: "action_proposed", action: toProposed(action) };
         yield {
           type: "message_complete",
@@ -546,7 +600,13 @@ export class CopilotService {
     }
 
     await this.store.save(conversation);
-    yield { type: "usage", inputTokens, outputTokens };
+    yield {
+          type: "usage",
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+        };
     yield { type: "message_complete", messageId, stopReason: "max_turns" };
   }
 
@@ -555,10 +615,18 @@ export class CopilotService {
     conversation: Conversation,
     inputTokens: number,
     outputTokens: number,
+    cacheCreationTokens: number,
+    cacheReadTokens: number,
     error: CopilotStreamEvent,
   ): AsyncGenerator<CopilotStreamEvent> {
     await this.store.save(conversation);
-    yield { type: "usage", inputTokens, outputTokens };
+    yield {
+          type: "usage",
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+        };
     yield error;
   }
 

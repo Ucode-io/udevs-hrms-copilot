@@ -17,11 +17,18 @@ export interface CopilotConfig {
     /** Used ONLY for the copilot's own bookkeeping collections. */
     serviceApiKey: string | null;
   };
+  billing: {
+    /** Shared with the billing FaaS; lets it trust usage records only from this service. */
+    serviceSecret: string | null;
+    quotaCacheMs: number;
+  };
   hrms: {
     employeeRoleId: string | null;
     /** Stamped on every employee the SPA's own form creates. */
     clientTypeId: string;
     reportsFunction: string;
+    /** Billing cloud function (AI quota + usage). */
+    billingFunction: string;
   };
 }
 
@@ -71,6 +78,10 @@ export const loadConfig = (): CopilotConfig => {
       environmentId: str("UCODE_ENVIRONMENT_ID"),
       serviceApiKey: optional("UCODE_SERVICE_API_KEY"),
     },
+    billing: {
+      serviceSecret: optional("BILLING_SERVICE_SECRET"),
+      quotaCacheMs: int("BILLING_QUOTA_CACHE_MS", 30_000),
+    },
     hrms: {
       employeeRoleId: optional("HRMS_EMPLOYEE_ROLE_ID"),
       // The constant the HRMS employee form hardcodes (Employees/Form/index.tsx).
@@ -81,6 +92,7 @@ export const loadConfig = (): CopilotConfig => {
         "1c435896-2f12-4b61-a684-62ad1d2307d1",
       ),
       reportsFunction: str("HRMS_REPORTS_FUNCTION", "udevs-hrms-reports"),
+      billingFunction: str("HRMS_BILLING_FUNCTION", "udevs-hrms-billing"),
     },
   };
 };

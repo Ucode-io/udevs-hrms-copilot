@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { CopilotController } from "./copilot.controller";
 import { CopilotService } from "./copilot.service";
 import { CopilotConcurrencyService } from "./copilot-concurrency.service";
+import { BillingQuotaService } from "./billing-quota.service";
 import { ConversationStore } from "./conversation.store";
 import { TableCatalog } from "./prompt/catalog";
 import { SystemPromptBuilder } from "./prompt/system-prompt";
@@ -17,6 +18,7 @@ import { CopilotKnowledgeTools } from "./tools/knowledge.tools";
   providers: [
     CopilotService,
     CopilotConcurrencyService,
+    BillingQuotaService,
     ConversationStore,
     TableCatalog,
     SystemPromptBuilder,

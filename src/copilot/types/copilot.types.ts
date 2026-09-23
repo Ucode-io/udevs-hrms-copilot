@@ -123,6 +123,8 @@ export type CopilotErrorCode =
   | "timeout"
   /** Misconfigured or unpayable upstream — retrying will not help. */
   | "unavailable"
+  /** The company used up its AI token allowance for the billing period. */
+  | "quota_exceeded"
   | "internal";
 
 /**
@@ -179,7 +181,13 @@ export type CopilotStreamEvent =
       messageId: string;
       stopReason: CopilotStopReason;
     }
-  | { type: "usage"; inputTokens: number; outputTokens: number }
+  | {
+      type: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationTokens?: number;
+      cacheReadTokens?: number;
+    }
   | { type: "error"; message: string; code?: CopilotErrorCode };
 
 /**

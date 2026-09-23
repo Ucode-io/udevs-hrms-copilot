@@ -12,6 +12,7 @@ const config: CopilotConfig = {
   model: "claude-sonnet-5",
   effort: "high",
   maxConcurrentStreams: 2,
+  billing: { serviceSecret: null, quotaCacheMs: 30_000 },
   ucode: {
     baseUrl: "https://ucode.test",
     projectId: "project-1",
@@ -22,6 +23,7 @@ const config: CopilotConfig = {
     employeeRoleId: "role-employee",
     clientTypeId: "client-type-1",
     reportsFunction: "reports-fn",
+    billingFunction: "billing-fn",
   },
 };
 
