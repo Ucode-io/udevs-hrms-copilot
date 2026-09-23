@@ -8,6 +8,10 @@ export interface TableEntry {
   label: string;
   description: string;
   hints: string[];
+  /** Readable, but closed to every mutation Tool. */
+  readOnly: boolean;
+  /** Why, in a clause the model can repeat to the person. */
+  readOnlyReason: string;
 }
 
 export interface ReportParam {
@@ -53,6 +57,8 @@ export class TableCatalog {
           hints: Array.isArray(t.hints)
             ? t.hints.map((h) => String(h).trim()).filter(Boolean)
             : [],
+          readOnly: t.read_only !== undefined,
+          readOnlyReason: String(t.read_only ?? "").trim(),
         };
         return [entry.slug, entry];
       }),

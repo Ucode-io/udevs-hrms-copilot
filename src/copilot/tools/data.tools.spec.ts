@@ -25,10 +25,16 @@ const config: CopilotConfig = {
     reportsFunction: "reports-fn",
     billingFunction: "billing-fn",
   },
+  telegram: {
+    botToken: null,
+    webhookSecret: null,
+    hickvisionFunction: "hickvision-fn",
+    webUrl: null,
+  },
 };
 
 const ctx: CopilotToolContext = {
-  caller: { userId: "user-1", companiesId: "company-a", token: "tok" },
+  caller: { userId: "user-1", companiesId: "company-a", projectId: "project-1", token: "tok" },
   route: "/employees",
 };
 
@@ -299,6 +305,60 @@ describe("CopilotDataTools", () => {
       );
 
       expect(result.tables?.[0].columns.map((c) => c.key)).toEqual(["first_name"]);
+    });
+
+    it("draws nothing when nothing matched", async () => {
+      // A card of headings over no rows says "ничего не найдено" in the most
+      // expensive way available. The model's sentence says it better.
+      const { client } = stubClient({ count: 0, response: [] });
+      const tools = new CopilotDataTools(client, new TableCatalog(), config).getTools();
+
+      const result = await toolNamed(tools, "list_items").execute(
+        { table: "user_base" },
+        ctx,
+      );
+
+      expect(result.tables).toBeUndefined();
+    });
+
+    it("leads the default columns with who the row is about", async () => {
+      // Attendance rows are times and a status; the employee lives on the
+      // relation. Taking the schema's own order gave three columns of times
+      // that nobody could attribute to anyone.
+      const { client } = stubClient({
+        count: 1,
+        response: [
+          {
+            guid: "a1",
+            user_base_id: "e-1",
+            user_base_id_data: { guid: "e-1", title: "Иванов Иван" },
+            check_in_time: "09:04",
+            delay_time: "00:00",
+            action_status: "present",
+          },
+        ],
+      });
+      jest.spyOn(client, "fields").mockResolvedValue([
+        { slug: "guid", label: "Guid", type: "UUID" },
+        { slug: "check_in_time", label: "Check in time", type: "SINGLE_LINE" },
+        { slug: "delay_time", label: "Delay time", type: "SINGLE_LINE" },
+        { slug: "action_status", label: "Отметка", type: "MULTISELECT" },
+        { slug: "user_base_id", label: "Сотрудник", type: "LOOKUP" },
+      ]);
+      const tools = new CopilotDataTools(client, new TableCatalog(), config).getTools();
+
+      const result = await toolNamed(tools, "list_items").execute(
+        { table: "attendance" },
+        ctx,
+      );
+
+      expect(result.tables?.[0].columns.map((c) => c.key)).toEqual([
+        "user_base_id_data",
+        "check_in_time",
+        "delay_time",
+        "action_status",
+      ]);
+      expect(result.tables?.[0].rows[0].user_base_id_data).toBe("Иванов Иван");
     });
 
     it("refuses a table outside the allowlist", async () => {

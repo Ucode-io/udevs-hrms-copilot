@@ -85,7 +85,12 @@ vault:
 #                            bundle — this is what signs the audit trail.
 #   HRMS_EMPLOYEE_ROLE_ID    role id that marks a user_base row as an employee
 #   UCODE_BASE_URL           https://api.admin.u-code.io
-#   UCODE_PROJECT_ID         9a462573-ce11-4288-928a-a6ba754b6998
+#   UCODE_PROJECT_ID         9a462573-ce11-4288-928a-a6ba754b6998. Only the
+#                            fallback now: the panel names its own project in a
+#                            Project-Id header, and this is what a request
+#                            without one gets. It also stays the fixed project
+#                            of the Copilot's own conversations and audit rows,
+#                            which the service API key is issued against.
 #   UCODE_ENVIRONMENT_ID     2f73835f-3a29-46c8-951e-75119db9bfc0
 #   CORS_ORIGINS             origin of the HRMS admin panel. The service refuses
 #                            every other origin, and its default is
@@ -94,8 +99,25 @@ vault:
 #                            down.
 #   COPILOT_MODEL            claude-sonnet-5
 #   COPILOT_EFFORT           high
-#   BILLING_SERVICE_SECRET   shared with udevs-hrms-reports; signs AI usage records
-#                            (billing_ai_usage_record). Same value in both places.
+#   BILLING_SERVICE_SECRET   shared with udevs-hrms-billing; signs AI usage
+#                            records (billing_ai_usage_record). Same value in
+#                            both places, else usage is silently not reported.
+#   TELEGRAM_BOT_TOKEN       the HRMS bot, same token the notifications are sent
+#                            with. Absent means the bot surface is off and the
+#                            panel is unaffected.
+#   TELEGRAM_WEBHOOK_SECRET  any long random string. Handed to Telegram by
+#                            set-webhook.ts and echoed back on every delivery —
+#                            the webhook URL is public, so this header is the
+#                            only proof an update came from Telegram.
+#   HRMS_WEB_URL             https://hrms.u-code.io — base for the "open in
+#                            HRMS" buttons. Without it those buttons are
+#                            dropped, because Telegram refuses a relative url.
+#
+# Turning the bot on is a deliberate sequence, NOT a deploy: the bot has one
+# update queue, and hickvision polls it today for group and phone binding.
+# hickvision ships FIRST (it gains the telegram_updates method the webhook
+# forwards to), then this service, then set-webhook.ts, and only then
+# hickvision again with TELEGRAM_POLLING=0. See README, "The Telegram bot".
 #
 # PORT stays below on purpose: it has to agree with the two port numbers in
 # this same file, and a mismatch is silent — the pod starts and the ingress
@@ -157,10 +179,11 @@ ingress:
         # claimed by career-site-web-ingress in frontend-prod, so any host under
         # it reaches the career site rather than this service.
         #
-        # The panel itself is frontend-prod/udevs-hrms-admin-web-ingress on
-        # hrms.udevs.io; a second copy answers on hrms.u-code.io from
-        # microfrontend-prod. Whichever one loads the Copilot has to appear in
-        # CORS_ORIGINS.
+        # The panel itself now answers on hrms.ucode.co — its real address since
+        # the domain move — and on hrms-admin.u-code.io, which is kept while that
+        # settles. Both are hosts of udevs-hrms-admin-web-ingress. Whichever one
+        # people open has to appear in CORS_ORIGINS, and that value lives in
+        # Vault: changing it here changes nothing.
         - host: "hrms-copilot.u-code.io"
           path: /
           servicePort: 8080

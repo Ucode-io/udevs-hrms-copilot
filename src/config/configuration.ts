@@ -12,6 +12,11 @@ export interface CopilotConfig {
   maxConcurrentStreams: number;
   ucode: {
     baseUrl: string;
+    /**
+     * Fallback project, used when a request carries no Project-Id header, and
+     * the fixed project of the Copilot's own bookkeeping — the service API key
+     * is issued against this one. Callers name their own project per request.
+     */
     projectId: string;
     environmentId: string;
     /** Used ONLY for the copilot's own bookkeeping collections. */
@@ -29,6 +34,28 @@ export interface CopilotConfig {
     reportsFunction: string;
     /** Billing cloud function (AI quota + usage). */
     billingFunction: string;
+  };
+  telegram: {
+    /**
+     * The HRMS bot's token. Absent means the bot half of this service is off —
+     * the webhook route then refuses rather than half-working, and the panel is
+     * unaffected.
+     */
+    botToken: string | null;
+    /**
+     * Shared with Telegram through setWebhook and echoed back by it on every
+     * call as X-Telegram-Bot-Api-Secret-Token. The webhook URL is public, so
+     * this is the only thing separating Telegram from anyone who guesses it.
+     */
+    webhookSecret: string | null;
+    /** ucode cloud function owning group and phone binding. */
+    hickvisionFunction: string;
+    /**
+     * Base URL of the HRMS panel, used to turn the Copilot's in-app links
+     * ("/employees/<guid>") into buttons. Without it those links are dropped
+     * rather than sent as a path Telegram cannot open.
+     */
+    webUrl: string | null;
   };
 }
 
@@ -61,9 +88,14 @@ export const loadConfig = (): CopilotConfig => {
 
   return {
     port: int("PORT", 8080),
+    // A trailing slash is stripped rather than honoured. An Origin header is
+    // scheme://host[:port] and never carries one, so "https://hrms.ucode.co/"
+    // matches nothing — and the way that fails is a browser CORS error that
+    // reads as the service being down, from a value that looks correct in
+    // Vault. Same treatment as UCODE_BASE_URL below, for the same reason.
     corsOrigins: str("CORS_ORIGINS", "http://localhost:5199")
       .split(",")
-      .map((o) => o.trim())
+      .map((o) => o.trim().replace(/\/+$/, ""))
       .filter(Boolean),
     anthropicApiKey: optional("ANTHROPIC_API_KEY"),
     model: str("COPILOT_MODEL", "claude-sonnet-5"),
@@ -93,6 +125,15 @@ export const loadConfig = (): CopilotConfig => {
       ),
       reportsFunction: str("HRMS_REPORTS_FUNCTION", "udevs-hrms-reports"),
       billingFunction: str("HRMS_BILLING_FUNCTION", "udevs-hrms-billing"),
+    },
+    telegram: {
+      botToken: optional("TELEGRAM_BOT_TOKEN"),
+      webhookSecret: optional("TELEGRAM_WEBHOOK_SECRET"),
+      hickvisionFunction: str(
+        "HRMS_HICKVISION_FUNCTION",
+        "udevs-hrms-hickvision",
+      ),
+      webUrl: optional("HRMS_WEB_URL")?.replace(/\/+$/, "") ?? null,
     },
   };
 };

@@ -57,6 +57,14 @@ const PAGES: Record<string, PageDef> = {
     label: "Открыть орг структуру",
     kind: "employees",
   },
+  dashboard: { path: "/dashboard", label: "Открыть дашборд", kind: "reports" },
+  tasks: { path: "/tasks", label: "Открыть задачи", kind: "reports" },
+  kpi: { path: "/kpi", label: "Открыть KPI", kind: "reports" },
+  chats: { path: "/chats", label: "Открыть чаты", kind: "employees" },
+  surveys: { path: "/surveys", label: "Открыть опросы", kind: "knowledge" },
+  budgeting: { path: "/budgeting", label: "Открыть бюджет", kind: "reports" },
+  property: { path: "/property", label: "Открыть имущество", kind: "settings" },
+  documents: { path: "/documents", label: "Открыть документы", kind: "knowledge" },
   reports: { path: "/reports", label: "Открыть отчёты", kind: "reports" },
   report_attendance: {
     path: "/reports/attendance",
@@ -94,6 +102,7 @@ const PAGES: Record<string, PageDef> = {
     kind: "time",
   },
   timesheet: { path: "/timesheet", label: "Открыть табель времени", kind: "time" },
+  work_schedules: { path: "/shifts", label: "Открыть график работы", kind: "time" },
   trainings: { path: "/trainings", label: "Открыть тренинги", kind: "reports" },
   vacancies: {
     path: "/recruiting/vacancies",

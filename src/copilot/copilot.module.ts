@@ -29,5 +29,7 @@ import { CopilotKnowledgeTools } from "./tools/knowledge.tools";
     CopilotNavigationTools,
     CopilotKnowledgeTools,
   ],
+  // The Telegram surface runs the same loop against the same Conversations.
+  exports: [CopilotService, ConversationStore],
 })
 export class CopilotModule {}

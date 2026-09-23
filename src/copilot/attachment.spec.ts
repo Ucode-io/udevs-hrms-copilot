@@ -174,6 +174,41 @@ describe("compactAttachments", () => {
     expect(stored[2]).toEqual(thread[2]);
   });
 
+  // A file the Copilot read out of the Knowledge Base is the one attachment
+  // worth dropping even while it is the newest: it is still in the base, and
+  // the alternative is a price list riding along on every later reply.
+  const kbPdf = (name: string): Anthropic.MessageParam => ({
+    role: "user",
+    content: [
+      { type: "tool_result", tool_use_id: "toolu_1", content: "{}" },
+      { type: "text", text: `[Файл из базы знаний: ${name}]` },
+      {
+        type: "document",
+        title: name,
+        source: { type: "base64", media_type: "application/pdf", data: "AAAA" },
+      },
+    ],
+  });
+
+  it("drops a Knowledge Base file even when nothing newer replaced it", () => {
+    const stored = compactAttachments([kbPdf("прайс.pdf"), answer]);
+    const blocks = stored[0].content as Anthropic.ContentBlockParam[];
+
+    expect(JSON.stringify(blocks)).not.toContain("AAAA");
+    expect(blocks[1]).toMatchObject({ text: "[Файл из базы знаний: прайс.pdf]" });
+    expect(blocks[2]).toMatchObject({ text: expect.stringContaining("kb_read_file") });
+    // The tool result it answered stays — dropping it would orphan the call.
+    expect(blocks[0]).toMatchObject({ type: "tool_result" });
+  });
+
+  it("keeps an upload whole when a Knowledge Base file arrived after it", () => {
+    const thread = [pdf("штат.xlsx"), answer, kbPdf("прайс.pdf")];
+    const stored = compactAttachments(thread);
+
+    expect(stored[0]).toEqual(thread[0]);
+    expect(JSON.stringify(stored[2])).not.toContain("AAAA");
+  });
+
   it("does not touch the live Thread it was given", () => {
     const thread = [pdf("первый.pdf"), pdf("второй.pdf")];
     compactAttachments(thread);

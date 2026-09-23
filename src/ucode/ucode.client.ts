@@ -67,7 +67,12 @@ export class UcodeClient {
    * the same token the rest of the copilot already uses.
    */
   async fields(ctx: CallerContext, table: string): Promise<FieldDef[]> {
-    const cached = this.fieldCache.get(table);
+    // Keyed by project too, now that the caller names one: two projects can
+    // both have a `user_base` with different columns, and a cache keyed on the
+    // table alone would hand one project the other's schema — which does not
+    // fail, it silently filters on columns that are not there.
+    const key = `${ctx.projectId} ${table}`;
+    const cached = this.fieldCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.fields;
 
     let fields = await this.schemaFields(ctx, table);
@@ -76,7 +81,7 @@ export class UcodeClient {
       throw new UcodeError(`Table "${table}" has no readable columns.`, 404);
     }
 
-    this.fieldCache.set(table, {
+    this.fieldCache.set(key, {
       fields,
       expiresAt: Date.now() + FIELD_CACHE_TTL_MS,
     });
@@ -431,6 +436,10 @@ export class UcodeClient {
    * One request as the Caller. `opts.serviceKey` swaps the Caller's bearer for
    * the service API key — used only for the Copilot's own bookkeeping
    * collections, never for HRMS data.
+   *
+   * A Caller carrying `service` gets the same key for their HRMS data too,
+   * because the Telegram bot has no token to borrow. That is the one path where
+   * ucode's own permission checks do not apply — see `CallerContext.service`.
    */
   async request(
     ctx: CallerContext | null,
@@ -441,7 +450,16 @@ export class UcodeClient {
     opts: { serviceKey?: boolean } = {},
   ): Promise<unknown> {
     const url = new URL(this.config.ucode.baseUrl + path);
-    url.searchParams.set("project-id", this.config.ucode.projectId);
+    const withServiceKey = opts.serviceKey === true || ctx?.service === true;
+    // The caller's project for their own data; the configured one for the
+    // Copilot's bookkeeping, whose API key is issued against it — an audit
+    // trail that follows whichever project the browser named is not one.
+    url.searchParams.set(
+      "project-id",
+      opts.serviceKey
+        ? this.config.ucode.projectId
+        : (ctx?.projectId ?? this.config.ucode.projectId),
+    );
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
 
     const headers: Record<string, string> = {
@@ -455,7 +473,7 @@ export class UcodeClient {
     if (!path.startsWith("/v2/invoke_function/")) {
       headers["Environment-Id"] = this.config.ucode.environmentId;
     }
-    if (opts.serviceKey) {
+    if (withServiceKey) {
       const key = this.config.ucode.serviceApiKey;
       if (!key) {
         throw new UcodeError("No ucode service API key configured.", 500);

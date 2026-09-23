@@ -56,11 +56,29 @@ export class CopilotReportTools implements CopilotToolGroup {
           month: {
             type: "string",
             description:
-              "Month as YYYY-MM. Omit to get the report's own default month.",
+              "Month as YYYY-MM. Omit to get the report's own default period. kpi, timesheet and budget also accept a bare YYYY for a whole year.",
+          },
+          date: {
+            type: "string",
+            description:
+              "One day as YYYY-MM-DD. Required by daily_status and ignored by every other report.",
+          },
+          bucket: {
+            type: "string",
+            enum: [...DAILY_BUCKETS],
+            description:
+              "daily_status only: which of the five lists to put on screen. Omit to show the counts alone — do that when the question is about the shape of the day rather than about who is in one of the lists.",
+          },
+          period: {
+            type: "string",
+            enum: [...KPI_PERIODS],
+            description:
+              "kpi only: which period the board is cut into. Omit for yearly, the view the KPI page opens on.",
           },
           search: {
             type: "string",
-            description: "Narrow the per-employee rows to a name (attendance_table only).",
+            description:
+              "Narrow the rows to a name (attendance_table and kpi only).",
           },
           lookup_only: {
             type: "boolean",
@@ -80,18 +98,78 @@ export class CopilotReportTools implements CopilotToolGroup {
         }
 
         const params: Record<string, unknown> = {};
-        const month = entry.name === "tasks" ? undefined : readString(input.month);
-        if (month) {
-          if (!/^\d{4}-\d{2}$/.test(month)) {
-            throw new CopilotToolError(`month must look like 2026-08, got "${month}".`);
+        switch (entry.name) {
+          // Takes nothing and always returns the whole board.
+          case "tasks":
+            break;
+
+          case "kpi": {
+            const period = readString(input.period) ?? "yearly";
+            if (!KPI_PERIODS.includes(period)) {
+              throw new CopilotToolError(
+                `Unknown period "${period}". Use one of: ${KPI_PERIODS.join(", ")}.`,
+              );
+            }
+            params.period_type = period;
+            const anchor = kpiAnchor(readString(input.date), readString(input.month));
+            if (anchor) params.as_of_date = anchor;
+            const search = readString(input.search);
+            if (search) params.search = search;
+            break;
           }
-          params.month = month;
-        }
-        const search = entry.name === "tasks" ? undefined : readString(input.search);
-        if (search) params.search = search;
-        if (entry.name === "attendance_table") {
-          params.page = 1;
-          params.limit = 50;
+
+          case "timesheet": {
+            const span = monthSpan(readString(input.month));
+            if (span) {
+              params.date_from = span.from;
+              params.date_to = span.to;
+            }
+            break;
+          }
+
+          case "budget": {
+            // A budget is always one whole year; a month only narrows which of
+            // its twelve columns the answer is read from, at render time.
+            params.year = budgetYear(readString(input.month));
+            break;
+          }
+
+          case "daily_status": {
+            const date = readString(input.date);
+            if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+              throw new CopilotToolError(
+                `daily_status needs a date like 2026-09-13, got "${date ?? "nothing"}".`,
+              );
+            }
+            params.date = date;
+            // Checked here rather than at render time, so a bad bucket costs a
+            // correction instead of a pointless call to the gateway first.
+            const bucket = readString(input.bucket);
+            if (bucket && !BUCKETS[bucket]) {
+              throw new CopilotToolError(
+                `Unknown bucket "${bucket}". Use one of: ${DAILY_BUCKETS.join(", ")}.`,
+              );
+            }
+            break;
+          }
+
+          default: {
+            const month = readString(input.month);
+            if (month) {
+              if (!/^\d{4}-\d{2}$/.test(month)) {
+                throw new CopilotToolError(
+                  `month must look like 2026-08, got "${month}".`,
+                );
+              }
+              params.month = month;
+            }
+            const search = readString(input.search);
+            if (search) params.search = search;
+            if (entry.name === "attendance_table") {
+              params.page = 1;
+              params.limit = 50;
+            }
+          }
         }
 
         const raw = await this.ucode.invokeFunction(
@@ -108,7 +186,13 @@ export class CopilotReportTools implements CopilotToolGroup {
         }
 
         let rendered: CopilotToolResult;
-        if (entry.name === "tasks") {
+        if (entry.name === "daily_status") {
+          rendered = renderDailyStatus(
+            result,
+            readString(input.date) ?? "",
+            readString(input.bucket),
+          );
+        } else if (entry.name === "tasks") {
           // Statuses and priorities are ids on a task; their titles live in a
           // second method. Two calls beat showing someone a board of uuids.
           const directories = extractResult(
@@ -121,7 +205,16 @@ export class CopilotReportTools implements CopilotToolGroup {
             "task_directories_get",
           );
           rendered = renderTasks(result, directories);
+        } else if (entry.name === "kpi") {
+          rendered = renderKpi(result);
+        } else if (entry.name === "timesheet") {
+          rendered = renderTimesheet(result);
+        } else if (entry.name === "budget") {
+          rendered = renderBudget(result, monthIndex(readString(input.month)));
         } else {
+          // From `params`, not from the input again: this is the month that was
+          // actually asked for, already validated.
+          const month = readString(params.month);
           rendered =
             entry.name === "attendance"
               ? renderAttendance(result, month)
@@ -241,6 +334,63 @@ const renderAttendance = (
     },
     kpis,
     ...(rendered.length > 0 ? { charts: rendered } : {}),
+  };
+};
+
+/**
+ * One day, split the way the day actually splits.
+ *
+ * The five counts are the answer to "как прошёл вчерашний день"; one of the
+ * five lists is the answer to "кто опоздал". Which is why `bucket` is a
+ * parameter rather than five tables: a question about the late people should
+ * not leave four other lists on the screen.
+ */
+const renderDailyStatus = (
+  result: Record<string, unknown>,
+  date: string,
+  bucket: string | undefined,
+): CopilotToolResult => {
+  const counts = readRecord(result.counts) ?? {};
+  const subtitle = dayLabel(date);
+
+  const kpis: CopilotKpi[] = [
+    kpi("Опоздали", counts.late),
+    kpi("Вовремя", counts.on_time),
+    kpi("Отсутствуют", counts.absent),
+    kpi("В отпуске / на больничном", counts.on_absence_policy),
+    kpi("Удалённо", counts.remote),
+  ].filter((k): k is CopilotKpi => k !== null);
+
+  // Already validated by the caller, which is the only one there is.
+  const spec = bucket ? BUCKETS[bucket] : undefined;
+  const rows = spec ? asArray(result[spec.key]) : [];
+  const table: CopilotTable | null =
+    spec && rows.length > 0
+      ? {
+          id: randomUUID(),
+          title: spec.title,
+          subtitle,
+          columns: spec.columns,
+          rows: rows.map(spec.row),
+        }
+      : null;
+
+  return {
+    ok: true,
+    summary: `${date}: ${Number(counts.late ?? 0)} late, ${Number(counts.absent ?? 0)} absent of ${Number(counts.total ?? 0)}`,
+    data: {
+      date,
+      counts,
+      ...(spec ? { bucket: spec.key, listed: rows.length } : {}),
+      ...(table ? { tableRendered: table.title } : {}),
+      note: table
+        ? "The counts are on screen as cards and the list as a table. Answer the question in one sentence — usually how many, and the one name worth singling out. Do not read the list back."
+        : spec
+          ? `Nobody is in the "${spec.title}" list for this day. Say so in one sentence; the counts are on screen.`
+          : "Only the counts are on screen. If the person asked who is in one of these groups rather than how many, call this again with the matching bucket.",
+    },
+    kpis,
+    ...(table ? { tables: [table] } : {}),
   };
 };
 
@@ -387,6 +537,552 @@ const renderTasks = (
   };
 };
 
+/**
+ * Tracked time against the schedule.
+ *
+ * The plan here is each person's own schedule minus holidays, which is why this
+ * report exists at all: "8 hours times working days" is wrong for half the
+ * company, and a Copilot quoting that number would contradict the page while
+ * looking equally confident.
+ */
+const renderTimesheet = (result: Record<string, unknown>): CopilotToolResult => {
+  const cards = readRecord(result.cards) ?? {};
+  const charts = readRecord(result.charts) ?? {};
+  const from = readString(cards.from) ?? "";
+  const to = readString(cards.to) ?? "";
+  const subtitle = from && to ? `${dayLabel(from)} — ${dayLabel(to)}` : undefined;
+
+  // Nothing tracked and nothing scheduled is not a company that worked zero
+  // hours — it is a period outside the tracking integration's reach, and eight
+  // zeroed cards would state that as fact.
+  if (
+    Number(cards.worked_seconds ?? 0) === 0 &&
+    Number(cards.plan_seconds ?? 0) === 0
+  ) {
+    return {
+      ok: true,
+      summary: `No tracked time for ${from || "that period"} — ${to || ""}`.trim(),
+      data: {
+        from,
+        to,
+        noData: true,
+        employees: Number(cards.employees_count ?? 0),
+        note: "Neither tracked hours nor a schedule exist for this period — no cards are shown. Say so in one sentence; do not report it as zero hours worked, which is a different statement.",
+      },
+    };
+  }
+
+  const kpis: CopilotKpi[] = [
+    kpi("Сотрудники", cards.employees_count),
+    kpi("Отработано", hoursLabel(cards.worked_seconds)),
+    kpi("План", hoursLabel(cards.plan_seconds)),
+    kpi("Выполнение", `${Number(cards.completion_rate ?? 0)}%`),
+    kpi("Переработка", hoursLabel(cards.overtime_seconds)),
+    kpi("Недобор", hoursLabel(cards.shortfall_seconds)),
+    // The whole point of opening this report: people with a schedule and not a
+    // single entry against it.
+    kpi("Без активности", cards.idle_employees),
+    Number(cards.manual_pending_count ?? 0) > 0
+      ? {
+          label: "Ручное время на подтверждении",
+          value: hoursLabel(cards.manual_pending_seconds),
+          hint: `${cards.manual_pending_count} запис(ей)`,
+        }
+      : null,
+  ].filter((k): k is CopilotKpi => k !== null);
+
+  const rendered: CopilotChart[] = [];
+  const byDay = asArray(charts.by_day);
+  // A year of daily bars is 366 unreadable columns; the cards already carry the
+  // totals, so the chart is simply dropped rather than drawn illegibly.
+  if (byDay.length > 0 && byDay.length <= 31) {
+    rendered.push({
+      id: randomUUID(),
+      kind: "bar",
+      title: "Часы по дням",
+      ...(subtitle ? { subtitle } : {}),
+      xKey: "label",
+      series: [
+        { key: "worked", label: "Отработано" },
+        { key: "plan", label: "План" },
+      ],
+      data: byDay.map((d) => ({
+        label: (readString(d.date) ?? "").slice(5).split("-").reverse().join("."),
+        worked: Number(d.worked_hours ?? 0),
+        plan: Number(d.plan_hours ?? 0),
+      })),
+    });
+  }
+
+  // Two lists rather than one: a shortfall and an overtime are different
+  // conversations with the person, and picking one for the reader would answer
+  // only half the questions this report gets asked.
+  const tables = [
+    deviationTable(charts.top_shortfall, "Недобор часов", subtitle),
+    deviationTable(charts.top_overtime, "Переработка", subtitle),
+  ].filter((t): t is CopilotTable => t !== null);
+
+  return {
+    ok: true,
+    summary: `${from}–${to}: ${hoursLabel(cards.worked_seconds)} of ${hoursLabel(cards.plan_seconds)} (${Number(cards.completion_rate ?? 0)}%), ${Number(cards.idle_employees ?? 0)} with no activity`,
+    data: {
+      from,
+      to,
+      days: Number(cards.days ?? 0),
+      cards,
+      chartsRendered: rendered.map((c) => c.title),
+      tablesRendered: tables.map((t) => t.title),
+      note: "Every figure is already on screen. Write at most two sentences on what stands out. \"Без активности\" counts people who have a schedule and no entry at all against it — that is usually a tracking gap, not idleness, so do not accuse anyone. Pending manual time explains part of any shortfall.",
+    },
+    kpis,
+    ...(rendered.length > 0 ? { charts: rendered } : {}),
+    ...(tables.length > 0 ? { tables } : {}),
+  };
+};
+
+/** One side of the deviation from plan, as a table, or nothing when empty. */
+const deviationTable = (
+  value: unknown,
+  title: string,
+  subtitle: string | undefined,
+): CopilotTable | null => {
+  const rows = asArray(value);
+  if (rows.length === 0) return null;
+
+  return {
+    id: randomUUID(),
+    title,
+    ...(subtitle ? { subtitle } : {}),
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "worked", label: "Отработано" },
+      { key: "plan", label: "План" },
+      { key: "deviation", label: "Отклонение" },
+    ],
+    rows: rows.map((r) => ({
+      employee: readString(r.name) ?? "—",
+      department: readString(r.department) ?? "—",
+      worked: hoursLabel(r.worked_seconds),
+      plan: hoursLabel(r.plan_seconds),
+      // Signed on purpose: the same column holds both lists, and "−12 ч" and
+      // "12 ч" are opposite findings.
+      deviation: `${Number(r.deviation_seconds ?? 0) > 0 ? "+" : "−"}${hoursLabel(Math.abs(Number(r.deviation_seconds ?? 0)))}`,
+    })),
+    totalCount: rows.length,
+  };
+};
+
+/**
+ * The payroll budget for one year, totalled per department.
+ *
+ * The gateway hands back the parts — departments, rows, twelve months of
+ * amounts — and the page adds them up itself, so this does the same arithmetic
+ * for the same reason: totals are derived bottom-up from the rows, never stored,
+ * so a stored total can never disagree with its parts.
+ */
+const renderBudget = (
+  result: Record<string, unknown>,
+  month: number | null,
+): CopilotToolResult => {
+  const year = Number(result.year ?? 0);
+  const label = month ? `${MONTHS[month - 1]} ${year}` : `${year} год`;
+
+  const departments = new Map(
+    asArray(result.departments).map((d) => [
+      readString(d.id) ?? "",
+      readString(d.title) ?? "—",
+    ]),
+  );
+  const rows = asArray(result.rows);
+  const departmentOf = new Map(
+    rows.map((r) => [readString(r.id) ?? "", readString(r.departmentId) ?? ""]),
+  );
+
+  // Amounts are per row per year, twelve months deep. A month narrows the read
+  // to one of the twelve; without one the year is the sum of all twelve.
+  const totals = new Map<string, { plan: number; fact: number }>();
+  for (const entry of asArray(result.amounts)) {
+    if (Number(entry.year) !== year) continue;
+    const department = departmentOf.get(readString(entry.rowId) ?? "");
+    if (department === undefined) continue;
+    const months = asArray(entry.months);
+    const picked = month ? months.slice(month - 1, month) : months;
+    const sum = totals.get(department) ?? { plan: 0, fact: 0 };
+    for (const m of picked) {
+      sum.plan += Number(m.plan ?? 0);
+      sum.fact += Number(m.fact ?? 0);
+    }
+    totals.set(department, sum);
+  }
+
+  const counts = new Map<string, { rows: number; vacancies: number }>();
+  for (const row of rows) {
+    const department = readString(row.departmentId) ?? "";
+    const count = counts.get(department) ?? { rows: 0, vacancies: 0 };
+    count.rows += 1;
+    if (readString(row.kind) === "vacancy") count.vacancies += 1;
+    counts.set(department, count);
+  }
+
+  if (counts.size === 0) {
+    return {
+      ok: true,
+      summary: `No budget rows for ${year}`,
+      data: {
+        year,
+        noData: true,
+        note: "This year's budget has no rows at all — nothing was drawn. Say so in one sentence; each year is its own dataset, so another year may well be filled in.",
+      },
+    };
+  }
+
+  // Every department that has rows, even one whose amounts are all still empty:
+  // an unfilled department is exactly what someone opening the budget looks for.
+  const tableRows: DailyRow[] = [...counts.entries()]
+    .map(([id, count]) => {
+      const sum = totals.get(id) ?? { plan: 0, fact: 0 };
+      return {
+        department: departments.get(id) ?? "—",
+        rows: count.rows,
+        vacancies: count.vacancies,
+        plan: money(sum.plan),
+        fact: money(sum.fact),
+        percent: sum.plan > 0 ? `${Math.round((sum.fact / sum.plan) * 100)}%` : "—",
+        _plan: sum.plan,
+      };
+    })
+    .sort((a, b) => Number(b._plan) - Number(a._plan))
+    .map(({ _plan: _drop, ...row }) => row);
+
+  const plan = [...totals.values()].reduce((sum, t) => sum + t.plan, 0);
+  const fact = [...totals.values()].reduce((sum, t) => sum + t.fact, 0);
+  const vacancies = rows.filter((r) => readString(r.kind) === "vacancy").length;
+
+  const kpis: CopilotKpi[] = [
+    kpi("План", money(plan)),
+    kpi("Факт", money(fact)),
+    kpi("Исполнение", plan > 0 ? `${Math.round((fact / plan) * 100)}%` : "—"),
+    kpi("Строк", rows.length),
+    kpi("Вакансий", vacancies),
+  ].filter((k): k is CopilotKpi => k !== null);
+
+  const table: CopilotTable = {
+    id: randomUUID(),
+    title: "Бюджет по отделам",
+    subtitle: label,
+    columns: [
+      { key: "department", label: "Отдел" },
+      { key: "rows", label: "Строк" },
+      { key: "vacancies", label: "Вакансий" },
+      { key: "plan", label: "План" },
+      { key: "fact", label: "Факт" },
+      { key: "percent", label: "Исполнение" },
+    ],
+    rows: tableRows,
+    totalCount: tableRows.length,
+  };
+
+  return {
+    ok: true,
+    summary: `Budget ${label}: plan ${money(plan)}, actual ${money(fact)}, ${vacancies} vacancy row(s)`,
+    data: {
+      year,
+      ...(month ? { month } : {}),
+      planTotal: plan,
+      factTotal: fact,
+      rows: rows.length,
+      vacancies,
+      tableRendered: table.title,
+      note: "The cards and the per-department table are on screen. Two sentences at most on what stands out. A department whose plan is 0 has rows but no amounts entered yet, which is a gap in the plan rather than a department that costs nothing. Tax and bonus percentages on a row are reference notes and are NOT included in these sums.",
+    },
+    kpis,
+    tables: [table],
+  };
+};
+
+/** Seconds as the hours people actually say: "7 ч 30 мин", "0 ч". */
+const hoursLabel = (value: unknown): string => {
+  const seconds = Number(value ?? 0);
+  if (!Number.isFinite(seconds)) return "0 ч";
+  const minutes = Math.round(Math.abs(seconds) / 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h} ч ${m} мин` : `${h} ч`;
+};
+
+/** A money figure, grouped but unitless — the budget carries no currency. */
+const money = (value: number): string =>
+  Math.round(value).toLocaleString("ru-RU");
+
+/** "2026-03" → that month's first and last day; a bare "2026" → the year. */
+const monthSpan = (month: string | undefined): { from: string; to: string } | null => {
+  if (!month) return null;
+  if (/^\d{4}$/.test(month)) return { from: `${month}-01-01`, to: `${month}-12-31` };
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!m) {
+    throw new CopilotToolError(
+      `month must look like 2026-08 or 2026, got "${month}".`,
+    );
+  }
+  // Day 0 of the next month is the last day of this one, leap years included.
+  const last = new Date(Date.UTC(Number(m[1]), Number(m[2]), 0)).getUTCDate();
+  return { from: `${m[1]}-${m[2]}-01`, to: `${m[1]}-${m[2]}-${last}` };
+};
+
+/** The year a budget question is about; today's when it names none. */
+const budgetYear = (month: string | undefined): number => {
+  if (!month) return new Date().getFullYear();
+  const m = /^(\d{4})(?:-\d{2})?$/.exec(month);
+  if (!m) {
+    throw new CopilotToolError(
+      `month must look like 2026-08 or 2026, got "${month}".`,
+    );
+  }
+  return Number(m[1]);
+};
+
+/** Which of the twelve columns to read, or null for the whole year. */
+const monthIndex = (month: string | undefined): number | null => {
+  const m = month ? /^\d{4}-(\d{2})$/.exec(month) : null;
+  return m ? Number(m[1]) : null;
+};
+
+/**
+ * The KPI board: every target with its plan, its actual and the percent.
+ *
+ * Flattened rather than nested, because a chat table has no disclosure triangle
+ * — a child target indented under its parent is the closest the panel gets to
+ * the tree the KPI page draws. The percent is the gateway's own, not recomputed
+ * here: a parent's actual comes from its children through a per-row aggregation
+ * (sum / min / max / avg) that only the gateway knows.
+ */
+const renderKpi = (result: Record<string, unknown>): CopilotToolResult => {
+  const period = readRecord(result.period) ?? {};
+  const label = readString(period.label) ?? "";
+  const periodType = readString(result.period_type) ?? "";
+
+  const rows: DailyRow[] = [];
+  const percents: number[] = [];
+  const walk = (nodes: Array<Record<string, unknown>>, depth: number): void => {
+    for (const node of nodes) {
+      const percent = Number(node.percent_total ?? 0);
+      percents.push(percent);
+      rows.push({
+        position: readString(node.position) ?? "—",
+        // Indented with figure spaces (U+2007): a plain leading space collapses
+        // away when the cell is laid out, and the child lands level with its
+        // parent.
+        title: `${"  ".repeat(depth)}${readString(node.title) ?? "—"}`,
+        plan: kpiValue(node.plan_total, node),
+        actual: kpiValue(node.actual_total, node),
+        percent: `${percent}%`,
+      });
+      walk(asArray(node.children), depth + 1);
+    }
+  };
+  walk(asArray(result.items), 0);
+
+  // An empty board is almost always the wrong period rather than a company with
+  // no targets — KPIs live in exactly one period type, so the yearly default
+  // shows nothing at all for a company that only keeps monthly ones.
+  if (rows.length === 0) {
+    return {
+      ok: true,
+      summary: `No ${periodType || ""} KPI for ${label || "that period"}`.replace(/\s+/g, " "),
+      data: {
+        period: label,
+        periodType,
+        noData: true,
+        note: "This period has no KPI targets at all — nothing was drawn. Say so in one sentence and offer the other periods (yearly, quarterly, monthly, weekly), because a company usually keeps its targets in just one of them.",
+      },
+    };
+  }
+
+  const achieved = percents.filter((p) => p >= 100).length;
+  const untouched = percents.filter((p) => p === 0).length;
+  const average = Math.round(
+    percents.reduce((sum, p) => sum + p, 0) / percents.length,
+  );
+
+  const kpis: CopilotKpi[] = [
+    kpi("KPI", rows.length),
+    kpi("Среднее выполнение", `${average}%`),
+    kpi("Выполнено", achieved),
+    kpi("Без движения", untouched),
+  ].filter((k): k is CopilotKpi => k !== null);
+
+  const table: CopilotTable = {
+    id: randomUUID(),
+    title: "KPI",
+    ...(label ? { subtitle: label } : {}),
+    columns: [
+      { key: "position", label: "Должность" },
+      { key: "title", label: "KPI" },
+      { key: "plan", label: "План" },
+      { key: "actual", label: "Факт" },
+      { key: "percent", label: "%" },
+    ],
+    rows,
+    totalCount: rows.length,
+  };
+
+  return {
+    ok: true,
+    summary: `${rows.length} KPI for ${label || periodType}: ${average}% on average, ${achieved} at or above plan`,
+    data: {
+      period: label,
+      periodType,
+      total: rows.length,
+      averagePercent: average,
+      achieved,
+      untouched,
+      tableRendered: table.title,
+      note: "The cards and the table are on screen. Write at most three sentences on what stands out — which positions are behind, which targets are at zero with the period already underway — and do not read the rows back. A target at 0% usually means nobody has filled the actual in, not that the work did not happen.",
+    },
+    kpis,
+    tables: [table],
+  };
+};
+
+/** Period types the KPI board is cut into; the gateway's own list. */
+const KPI_PERIODS = ["daily", "weekly", "monthly", "quarterly", "yearly"];
+
+/**
+ * The day the KPI gateway builds the period around.
+ *
+ * It takes `as_of_date` and works outwards to the enclosing week, month,
+ * quarter or year, so an anchor only has to land somewhere inside the period it
+ * names — which is why a bare month or year is enough, and why the middle of
+ * one is picked rather than its first day.
+ */
+const kpiAnchor = (
+  date: string | undefined,
+  month: string | undefined,
+): string | null => {
+  if (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new CopilotToolError(`date must look like 2026-09-13, got "${date}".`);
+    }
+    return date;
+  }
+  if (!month) return null;
+  if (/^\d{4}-\d{2}$/.test(month)) return `${month}-15`;
+  if (/^\d{4}$/.test(month)) return `${month}-06-15`;
+  throw new CopilotToolError(
+    `month must look like 2026-08 or 2026, got "${month}".`,
+  );
+};
+
+/** A KPI figure carries its own unit — "50 783 $", "14 %", "$1 200". */
+const kpiValue = (value: unknown, node: Record<string, unknown>): string => {
+  const num = Number(value ?? 0);
+  const text = Number.isFinite(num) ? num.toLocaleString("ru-RU") : "0";
+  const symbol = readString(node.value_symbol) ?? "";
+  if (!symbol) return text;
+  return node.value_symbol_position === "prefix"
+    ? `${symbol}${text}`
+    : `${text} ${symbol}`;
+};
+
+// ─── daily_status buckets ───────────────────────────────────────────────────
+
+type DailyRow = Record<string, string | number | null>;
+
+interface BucketSpec {
+  /** Key on the gateway response holding this list. */
+  key: string;
+  title: string;
+  columns: Array<{ key: string; label: string }>;
+  row: (r: Record<string, unknown>) => DailyRow;
+}
+
+const person = (r: Record<string, unknown>): DailyRow => ({
+  employee: readString(r.full_name) ?? "—",
+  department: readString(r.department_title) ?? "—",
+});
+
+const BUCKETS: Record<string, BucketSpec> = {
+  late: {
+    key: "late",
+    title: "Опоздавшие",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Пришёл" },
+      { key: "delay", label: "Опоздание" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? "—",
+      delay: readString(r.delay_time) ?? "—",
+    }),
+  },
+  on_time: {
+    key: "on_time",
+    title: "Пришли вовремя",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Пришёл" },
+      { key: "check_out", label: "Ушёл" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? "—",
+      check_out: readString(r.check_out_time) ?? "—",
+    }),
+  },
+  absent: {
+    key: "absent",
+    title: "Отсутствуют",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "reason", label: "Причина" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      // The gateway's two reasons say different things: one is a record saying
+      // the person was away, the other is the absence of any record at all.
+      reason:
+        readString(r.reason) === "marked_absent"
+          ? "Отмечен отсутствующим"
+          : "Нет отметки прихода",
+    }),
+  },
+  on_absence_policy: {
+    key: "on_absence_policy",
+    title: "В отпуске / на больничном",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "policy", label: "Тип" },
+      { key: "until", label: "По" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      policy: readString(r.policy_title) ?? "—",
+      until: readString(r.absence_date_to)?.slice(0, 10) ?? "—",
+    }),
+  },
+  remote: {
+    key: "remote",
+    title: "Работают удалённо",
+    columns: [
+      { key: "employee", label: "Сотрудник" },
+      { key: "department", label: "Отдел" },
+      { key: "check_in", label: "Отметился" },
+    ],
+    row: (r) => ({
+      ...person(r),
+      check_in: readString(r.check_in_time) ?? (r.checked_in ? "да" : "—"),
+    }),
+  },
+};
+
+const DAILY_BUCKETS = Object.keys(BUCKETS);
+
 const asArray = (value: unknown): Array<Record<string, unknown>> =>
   (Array.isArray(value) ? value : [])
     .map((item) => readRecord(item))
@@ -449,6 +1145,18 @@ const monthLabel = (month: string): string => {
   const name = MONTHS[Number(m[2]) - 1];
   return name ? `${name} ${m[1]}` : month;
 };
+
+/** "2026-09-13" reads as a machine key; "13 сентября 2026" reads as a day. */
+const dayLabel = (date: string): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const name = m ? MONTHS_GENITIVE[Number(m[2]) - 1] : undefined;
+  return m && name ? `${Number(m[3])} ${name} ${m[1]}` : date;
+};
+
+const MONTHS_GENITIVE = [
+  "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря",
+];
 
 const kpi = (label: string, value: unknown): CopilotKpi | null =>
   value === undefined || value === null

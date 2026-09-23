@@ -82,7 +82,14 @@ export type CopilotLinkKind =
   | "time"
   | "settings"
   | "knowledge"
-  | "external";
+  | "external"
+  /**
+   * A file to download rather than a place to go. Clients keep these on every
+   * message: a navigation button in an old message would send the person back
+   * through their own history, while a file handed over three replies ago is
+   * still the file they were given.
+   */
+  | "file";
 
 /**
  * A clickable affordance surfaced when something is better finished on a page

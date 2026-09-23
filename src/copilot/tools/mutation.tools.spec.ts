@@ -25,10 +25,16 @@ const config: CopilotConfig = {
     reportsFunction: "reports-fn",
     billingFunction: "billing-fn",
   },
+  telegram: {
+    botToken: null,
+    webhookSecret: null,
+    hickvisionFunction: "hickvision-fn",
+    webUrl: null,
+  },
 };
 
 const ctx: CopilotToolContext = {
-  caller: { userId: "user-1", companiesId: "company-a", token: "tok" },
+  caller: { userId: "user-1", companiesId: "company-a", projectId: "project-1", token: "tok" },
   route: null,
 };
 
@@ -321,5 +327,38 @@ describe("create_items", () => {
 
       expect(card.changes![0].after).not.toContain("dept-1");
     });
+  });
+});
+
+/**
+ * Read-only tables fail at the gate, not in production data. Each of these
+ * writes would be accepted by ucode and land a row the page then renders
+ * wrong — a shift outside its series, a survey whose body is an object, a
+ * laptop reassigned with no movement history.
+ */
+describe("read-only tables", () => {
+  it.each([
+    ["create_item", { table: "shift", values: { date: "2026-09-23" } }],
+    ["update_item", { table: "properties", guid: "p-1", values: { status: "assigned" } }],
+    ["delete_item", { table: "surveys", guid: "s-1" }],
+  ])("refuses %s and says why", async (name, input) => {
+    const { tools, creates, removed } = stub();
+
+    await expect(toolNamed(tools, name).execute(input, ctx)).rejects.toThrow(
+      /can be read but not changed/,
+    );
+    expect(creates).toHaveLength(0);
+    expect(removed).toHaveLength(0);
+  });
+
+  it("still lets a writable table through", async () => {
+    const { tools, removed } = stub();
+
+    await toolNamed(tools, "delete_item").execute(
+      { table: "departments", guid: "dept-1" },
+      ctx,
+    );
+
+    expect(removed).toHaveLength(1);
   });
 });

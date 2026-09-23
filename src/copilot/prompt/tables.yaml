@@ -13,6 +13,13 @@
 # does not supply its own title, so it is written for the person reading the
 # panel and follows the wording of the HRMS UI.
 #
+# `read_only`, when present, closes the table to every mutation Tool and gives
+# the reason — a clause finishing "it can be read but not changed because …".
+# It is for tables whose rows are only correct when the page writes them: one
+# row of a series is not a schedule, a handover with no movement history is a
+# lost trail. A Hint saying "do not write here" would be a suggestion; this is
+# the rule.
+#
 # `hints` are returned by describe_table alongside the real column list. They
 # exist because a schema dump does not reveal that a column holds an array, that
 # a filter is mandatory for the rows to mean what you think, or that two
@@ -30,8 +37,8 @@ tables:
     label: Сотрудники
     description: >-
       Employees and other system users. THE main HR table: names, contacts, hire
-      and birth dates, department / position / location / division, employment
-      type, experience level, status.
+      and birth dates, department / position / branch, employment type,
+      experience level, status.
     hints:
       - >-
         This table holds every kind of user, not only employees. Unless the
@@ -51,7 +58,7 @@ tables:
         Relations come in pairs — departments_id holds the guid,
         departments_id_data holds {guid, title}. Filter on the _id column,
         report the _data title. Same for positions_id, locations_id,
-        divisions_id, employment_types_id, experience_levels_id, role_id.
+        employment_types_id, experience_levels_id, role_id.
       - >-
         Dismissal fields exist under TWO spellings in production —
         dismissal_types_id and dismissial_types_id (likewise
@@ -82,6 +89,19 @@ tables:
         For a month or period summary prefer run_report("attendance") — it
         returns the same figures the Reports page shows, already reconciled.
         Aggregate this table directly only for a cut the report does not offer.
+      - >-
+        For ONE day — "кто опоздал вчера", "кто сегодня отсутствует" — use
+        run_report("daily_status"), never this table. Lateness is not something
+        you can filter for here: it is 'late' in action_status OR a non-zero
+        delay_time, delay_time is TEXT shaped "ЧЧ:ММ" so it cannot be compared
+        as a number, one employee has several rows per day from different
+        sources of which only the highest-priority one counts, and rows whose
+        status contains 'rejected' do not count at all. A filtered list_items
+        gets every one of those wrong.
+      - >-
+        status, action_status and source_type are ARRAY columns. Filter them
+        with eq and a single value (the compiler wraps it) or with in and a
+        list.
 
   - slug: absences
     label: Отсутствия
@@ -104,13 +124,21 @@ tables:
     label: Должности
     description: Job titles. Referenced by user_base.positions_id.
 
-  - slug: divisions
-    label: Подразделения
-    description: Organisational divisions above or beside departments.
-
   - slug: locations
-    label: Локации
-    description: Offices and work sites. Referenced by user_base.locations_id.
+    label: Филиалы
+    description: >-
+      Branches — the physical places employees check in at. A branch owns only
+      its point on the map and its radius. Referenced by user_base.locations_id;
+      points at its region through locations.regions_id.
+
+  - slug: regions
+    label: Регионы
+    description: >-
+      Regions — a place with its own clock, holiday calendar and language.
+      A branch sits in exactly one region, and an employee's region is reached
+      through the branch: user_base.locations_id -> locations.regions_id.
+      There is no region column on the employee. The former divisions table is
+      dead: it described org structure, not geography.
 
   - slug: employment_types
     label: Типы занятости
@@ -123,6 +151,85 @@ tables:
   - slug: skills
     label: Навыки
     description: The skill catalogue employees can be tagged with.
+
+  - slug: shift
+    label: График работы
+    description: >-
+      Work schedules — one row per employee per calendar day, saying when (or
+      how long) that person is meant to work. Singular slug, not "shifts".
+    read_only: >-
+      the page saves a whole series at once, and a single row written on its own
+      belongs to no series. Offer the График работы page.
+    hints:
+      - >-
+        One row is ONE person on ONE day, not a recurring rule: a month of work
+        for one employee is ~22 rows. date is that day. Counting rows counts
+        person-days, which is what "сколько смен" usually means, but never
+        "сколько графиков".
+      - >-
+        A row with an empty user_base_id is an OPEN slot — the shift exists, no
+        one is assigned to it yet. Filtering it out and filtering it in are
+        different questions; unassigned rows are the whole point of the page.
+      - >-
+        Time is stored in one of two mutually exclusive ways: start_time and
+        end_time as "ЧЧ:ММ" TEXT (a fixed time of day), or hours_per_day as a
+        number ("8 hours, whenever"). Exactly one of the two is filled, so
+        summing hours_per_day alone misses every fixed-time shift.
+      - >-
+        A night shift is end_time <= start_time — it crosses midnight, so its
+        length is 24h minus start plus end, never end minus start. A shift given
+        only by hours_per_day has no time of day and therefore cannot be night.
+      - >-
+        series_id groups the rows that one save created (one schedule laid over
+        several people and days). date_from / date_to only record the period the
+        form was filled with — they are NOT how you find the rest of a series,
+        and are empty on older rows.
+      - >-
+        Relations come in pairs as everywhere: user_base_id, positions_id,
+        locations_id with their _data twins. Remote work is a location, not a
+        flag.
+
+  - slug: surveys
+    label: Опросы
+    description: >-
+      Surveys the company has authored — title and status only. Who was assigned
+      one and what they answered is NOT here.
+    read_only: >-
+      body is a JSON document kept as a string, and a written object opens as an
+      empty survey. Offer the Опросы page.
+    hints:
+      - >-
+        status is an ARRAY column holding one of draft / active / archived.
+        Filter it with eq and a single value.
+      - >-
+        body is the questionnaire itself, a JSON document kept as a string. It
+        cannot be filtered on, and reading it back is rarely the answer — quote
+        the questions only if the person asked for them.
+      - >-
+        Answers and assignments live behind the reports gateway, not in any
+        table the Copilot can read. If the question is about results or who has
+        responded, say that plainly and offer the Опросы page; do not answer it
+        from this table.
+
+  - slug: properties
+    label: Имущество
+    description: >-
+      Company property — equipment with its category, serial number, cost,
+      warranty, current status and who currently holds it.
+    read_only: >-
+      handing an item over also writes its movement history, which a plain
+      update skips, leaving no trace of who held it before. Offer the Имущество
+      page.
+    hints:
+      - >-
+        status is an ARRAY column holding one of in_stock / assigned / repair /
+        written_off. Filter it with eq and a single value.
+      - >-
+        user_base_id is whoever holds the item right now, and is empty for
+        anything in stock. assigned_date is when they got it.
+      - >-
+        The movement history is a separate table the Copilot cannot read, so
+        "who had this laptop before" is not a question this table answers.
 
   - slug: trainings
     label: Тренинги
@@ -166,6 +273,27 @@ reports:
       returns the whole board.
     params: []
 
+  - name: daily_status
+    method: get_daily_status
+    description: >-
+      Where every employee stood on ONE calendar day, split into five lists:
+      late, on time, absent, away on an approved absence, and working remotely.
+      This is the ONLY correct answer to a question about a single day — it
+      applies the same rules the Reports pages do (the dominant record per
+      person per day, rejected records dropped, late time parsed out of the
+      "ЧЧ:ММ" delay field), none of which a filter on the attendance table can
+      express. Pass `bucket` to show one of the lists; omit it for the counts
+      alone.
+    params:
+      - name: date
+        description: The day as YYYY-MM-DD. Required.
+        required: true
+      - name: bucket
+        description: >-
+          Which list to put on screen — late, on_time, absent,
+          on_absence_policy or remote. Omit to show only the five counts.
+        required: false
+
   - name: attendance_table
     method: get_attendance_table
     description: >-
@@ -174,4 +302,57 @@ reports:
     params:
       - name: month
         description: Month as YYYY-MM.
+        required: false
+
+  - name: timesheet
+    method: get_timesheet_report
+    description: >-
+      Tracked working time against the schedule for a period: hours worked,
+      hours planned, how far the two diverge, and who is sitting at zero. Plan
+      comes from each person's own work schedule with holidays taken out, not
+      from "8 hours times working days", so it is the only honest answer to
+      "сколько отработали". Defaults to the current week.
+    params:
+      - name: month
+        description: >-
+          Month as YYYY-MM, or a bare YYYY for the whole year. Omit for the
+          current week.
+        required: false
+
+  - name: budget
+    method: budget_get
+    description: >-
+      The payroll budget for one year — planned and actual cost per department,
+      over employees and open vacancies. Budget is not an HRMS table and cannot
+      be reached with list_items; this report is the only way to see it.
+    params:
+      - name: month
+        description: >-
+          Year as YYYY for the whole year, or YYYY-MM for one month of it.
+          Defaults to the current year.
+        required: false
+
+  - name: kpi
+    method: get_kpi_table
+    description: >-
+      The KPI board — every target with its plan, its actual and the percent
+      achieved, grouped by position and nested under its parent target. KPI is
+      not an HRMS table and cannot be reached with list_items; this report is the
+      only way to see it. Defaults to the current year, which is the view the KPI
+      page itself opens on.
+    params:
+      - name: period
+        description: >-
+          Which period the board is cut into — daily, weekly, monthly, quarterly
+          or yearly. Defaults to yearly. A KPI belongs to exactly one period, so
+          the wrong period shows an empty board rather than the same figures
+          rolled up.
+        required: false
+      - name: month
+        description: >-
+          Which period to show, as YYYY-MM or a bare YYYY. Defaults to the one
+          containing today.
+        required: false
+      - name: search
+        description: Narrow to KPIs matching a name, source or position.
         required: false

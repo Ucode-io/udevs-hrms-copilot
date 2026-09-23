@@ -206,8 +206,8 @@ const TABLES = {
   attendance,
   absences: [],
   absence_policies: [],
-  divisions: [],
   locations: [],
+  regions: [],
   employment_types: [],
   experience_levels: [],
   skills: [],
@@ -231,7 +231,7 @@ const SCHEMA = {
   },
   employee_works: {
     guid: "uuid", user_base_id: "uuid", departments_id: "uuid", positions_id: "uuid",
-    divisions_id: "uuid", locations_id: "uuid", employment_types_id: "uuid",
+    locations_id: "uuid", employment_types_id: "uuid",
     experience_levels_id: "uuid", employee_work_reason_id: "uuid", salary: "numeric",
     date_from: "date", date_to: "date", companies_id: "uuid",
     deleted_at: "timestamp without time zone",

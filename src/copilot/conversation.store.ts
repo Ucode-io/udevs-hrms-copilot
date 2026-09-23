@@ -17,6 +17,16 @@ export interface Conversation {
   id: string;
   userId: string;
   companiesId: string;
+  /**
+   * The Telegram chat this Conversation is being held in, or null for the ones
+   * the browser opened.
+   *
+   * Telegram has no list of conversations to pick from — a chat is one endless
+   * ribbon — so the chat id is what stands in for "the Conversation I am in",
+   * and the
+   * Company the person picked with a button rides along on `companiesId`.
+   */
+  telegramChatId: string | null;
   title: string | null;
   /** The Thread: raw Anthropic messages, the source of truth for a replay. */
   thread: Anthropic.MessageParam[];
@@ -81,12 +91,17 @@ export class ConversationStore {
     }
   }
 
-  async create(caller: CallerContext, firstMessage: string): Promise<Conversation> {
+  async create(
+    caller: CallerContext,
+    firstMessage: string,
+    telegramChatId: string | null = null,
+  ): Promise<Conversation> {
     const now = new Date().toISOString();
     const conversation: Conversation = {
       id: randomUUID(),
       userId: caller.userId,
       companiesId: caller.companiesId,
+      telegramChatId,
       title: firstMessage.slice(0, 80),
       thread: [],
       pendingAction: null,
@@ -174,6 +189,66 @@ export class ConversationStore {
       .filter((c) => this.owns(caller, c) && c.thread.length > 0);
   }
 
+  /**
+   * The Conversation a Telegram chat is currently in, or null to start a new
+   * one.
+   *
+   * "Currently" is the whole point: a chat has no visible conversation list, so
+   * yesterday's thread would otherwise be dragged into today's question forever.
+   * Anything idle past `maxAgeMs` is treated as finished and left behind — the
+   * row stays for the audit trail, it is simply no longer continued.
+   *
+   * Scoped to the Caller as well as the chat. One Telegram account can hold
+   * several employee records (one per Company, see the 2026-09-15 migration
+   * that dropped the unique index), and each Company's thread is its own.
+   */
+  async findActiveByChat(
+    caller: CallerContext,
+    chatId: string,
+    maxAgeMs: number,
+  ): Promise<Conversation | null> {
+    const fresh = (c: Conversation): boolean =>
+      Date.now() - Date.parse(c.updatedAt) < maxAgeMs;
+
+    if (this.mode === "memory") {
+      return (
+        [...this.memory.values()]
+          .filter(
+            (c) =>
+              c.telegramChatId === chatId && this.owns(caller, c) && fresh(c),
+          )
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null
+      );
+    }
+
+    const body = await this.write(
+      "GET",
+      `/v2/items/${CONVERSATIONS_TABLE}`,
+      undefined,
+      {
+        data: JSON.stringify({
+          limit: 1,
+          offset: 0,
+          telegram_chat_id: chatId,
+          user_id: caller.userId,
+          companies_id: caller.companiesId,
+          order: { updated_at: -1 },
+        }),
+      },
+    );
+    // Re-checked on the way out for the reason `list` spells out: ucode SILENTLY
+    // DROPS a filter naming a column the table does not have. Here that failure
+    // mode is worse than a wrong list — before the column exists in the ucode
+    // admin, every filter above is dropped and the newest conversation in the
+    // whole collection comes back, which would splice a stranger's thread into
+    // this chat.
+    const conversation = extractRows(body).map(fromRow)[0];
+    if (!conversation) return null;
+    const mine =
+      conversation.telegramChatId === chatId && this.owns(caller, conversation);
+    return mine && fresh(conversation) ? conversation : null;
+  }
+
   /** A Conversation belongs to one person in one Company, and to nobody else. */
   private owns(caller: CallerContext, c: Conversation): boolean {
     return (
@@ -249,6 +324,7 @@ export class ConversationStore {
       guid: c.id,
       user_id: c.userId,
       companies_id: c.companiesId,
+      telegram_chat_id: c.telegramChatId,
       title: c.title,
       // jsonb-shaped columns in ucode are written as strings, which is also how
       // the HRMS SPA stores its own JSON columns (see user_base.custom_data).
@@ -306,6 +382,10 @@ const fromRow = (row: Record<string, unknown>): Conversation => ({
   id: String(row.guid ?? ""),
   userId: String(row.user_id ?? ""),
   companiesId: String(row.companies_id ?? ""),
+  telegramChatId:
+    row.telegram_chat_id === null || row.telegram_chat_id === undefined
+      ? null
+      : String(row.telegram_chat_id),
   title: typeof row.title === "string" ? row.title : null,
   thread: parseJson<Anthropic.MessageParam[]>(row.thread) ?? [],
   pendingAction: parseJson<CopilotPendingAction>(row.pending_action),

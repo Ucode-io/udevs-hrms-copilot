@@ -81,6 +81,46 @@ export interface CallerContext {
   userId: string;
   /** The Company every request is scoped to. Never model- or client-supplied. */
   companiesId: string;
+  /**
+   * The ucode project this caller's HRMS data lives in — the panel's own
+   * `project-id`, sent as a header, falling back to UCODE_PROJECT_ID.
+   *
+   * Client-supplied where `companiesId` deliberately is not, because ucode
+   * enforces this one and does not enforce that one: naming a project reaches
+   * nothing the caller's token does not already open, since every call made
+   * with it is authorized inside that project. Omitting `companies_id`, by
+   * contrast, returns rows from every company.
+   */
+  projectId: string;
   /** The caller's raw bearer token, forwarded to ucode verbatim. */
   token: string;
+  /**
+   * The Caller reached us through the Telegram bot and has no token of their
+   * own, so HRMS data is read under the service API key.
+   *
+   * ⚠️ THIS REMOVES UCODE'S PERMISSION CHECKS FOR THIS CALLER. Everywhere else
+   * the person's own bearer decides what they may read, and ucode enforces it
+   * per role (admin gateway, object_v2.go: `role_id_from_token`). The service
+   * key carries the project admin's role instead, so on this path an ordinary
+   * employee can read anything their Company has — including other people's
+   * salaries. Deliberate, and accepted by the product owner on 2026-09-16:
+   * Telegram has no HRMS session to borrow, and a session only lasts a day
+   * (AccessTokenExpiresInTime = 1440m), which would make the bot go blind every
+   * night. `companiesId` is still derived, never supplied, so the leak stops at
+   * the Company boundary.
+   *
+   * If this ever needs tightening, the place is here — a self-scope filter
+   * forced into every tool query, not a sentence in the system prompt.
+   */
+  service?: boolean;
+  /**
+   * The Caller as a person, for the prompt — never for authorization, which
+   * uses `userId` and `companiesId` and nothing else.
+   *
+   * Set only on the Telegram path, and set by us rather than by any client.
+   * Without it the model has no idea who "я" is: asked "сколько у меня
+   * осталось отпуска" it can only ask for a name back, which in a personal chat
+   * with an employee is the one question it should never have to ask.
+   */
+  person?: { name: string; surface: "telegram" };
 }
