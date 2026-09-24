@@ -53,7 +53,7 @@ export class CopilotController {
     timeout: "The Copilot took too long to respond. Please try again.",
     unavailable: "The Copilot is unavailable. Please tell your administrator.",
     quota_exceeded:
-      "The company's AI token allowance for this period is used up. Ask your administrator to add a token pack.",
+      "The company's AI allowance for this period is used up. Contact your company administrator.",
     internal: "Something went wrong. Please try again.",
   };
 
