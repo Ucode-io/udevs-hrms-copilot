@@ -54,6 +54,9 @@ export class CopilotController {
     unavailable: "The Copilot is unavailable. Please tell your administrator.",
     quota_exceeded:
       "The company's AI allowance for this period is used up. Contact your company administrator.",
+    subscription_inactive:
+      "The company's subscription is not paid. The Copilot is unavailable until it is.",
+    ai_disabled: "The Copilot is not included in the company's plan.",
     internal: "Something went wrong. Please try again.",
   };
 

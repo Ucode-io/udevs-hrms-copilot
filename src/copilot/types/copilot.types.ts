@@ -132,6 +132,10 @@ export type CopilotErrorCode =
   | "unavailable"
   /** The company used up its AI token allowance for the billing period. */
   | "quota_exceeded"
+  /** The company's subscription is unpaid (read-only) or canceled. */
+  | "subscription_inactive"
+  /** The company's plan does not include the Copilot. */
+  | "ai_disabled"
   | "internal";
 
 /**

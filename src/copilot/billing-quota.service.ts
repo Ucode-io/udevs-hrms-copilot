@@ -105,10 +105,13 @@ export class BillingQuotaService {
 
   /** The SSE error a refused turn ends with. */
   refusal(quota: BillingQuota): CopilotStreamEvent {
+    // Own codes, not "forbidden": the admin panel maps known codes to its own
+    // generic text ("Нет доступа к этим данным"), which would hide why the
+    // Copilot refused. An unknown code falls back to this message as is.
     if (quota.reason === "read_only") {
       return {
         type: "error",
-        code: "forbidden",
+        code: "subscription_inactive",
         message:
           "Подписка компании не оплачена — Копилот недоступен до оплаты. Обратитесь к администратору.",
       };
@@ -116,7 +119,7 @@ export class BillingQuotaService {
     if (quota.reason === "ai_disabled") {
       return {
         type: "error",
-        code: "forbidden",
+        code: "ai_disabled",
         message: "Копилот не входит в тариф компании. Обратитесь к администратору.",
       };
     }
