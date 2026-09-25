@@ -30,6 +30,7 @@ const config: CopilotConfig = {
     webhookSecret: null,
     hickvisionFunction: "hickvision-fn",
     webUrl: null,
+    miniAppUrl: "https://employee.test",
   },
 };
 

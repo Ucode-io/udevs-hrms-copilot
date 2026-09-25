@@ -8,6 +8,7 @@ const config = {
     webhookSecret: "secret",
     hickvisionFunction: "udevs-hrms-hickvision",
     webUrl: "https://hrms.test",
+    miniAppUrl: "https://employee.test",
   },
 } as CopilotConfig;
 
@@ -26,7 +27,7 @@ const api = {
       chatId: string,
       text: string,
       _buttons: unknown[] = [],
-      _keyboard: string[] = [],
+      _keyboard: unknown[] = [],
     ) => {
       sent.push({ chatId, text });
       return 100 + sent.length;
@@ -294,7 +295,15 @@ describe("a question in a private chat", () => {
       (call) => (call[3] ?? []).length > 0,
     );
     expect(withKeyboard).toHaveLength(1);
-    expect(withKeyboard[0][3]).toEqual(["🔄 Заново", "🏢 Компания"]);
+    expect(withKeyboard[0][3]).toEqual([
+      [
+        {
+          text: "🙋 Отпроситься",
+          web_app: { url: "https://employee.test/?open=absence" },
+        },
+      ],
+      [{ text: "🔄 Заново" }, { text: "🏢 Компания" }],
+    ]);
   });
 
   it("does not re-edit when the next tool says the same thing", async () => {

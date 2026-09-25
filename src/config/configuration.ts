@@ -56,6 +56,8 @@ export interface CopilotConfig {
      * rather than sent as a path Telegram cannot open.
      */
     webUrl: string | null;
+    /** The employee mini app, opened by the "Отпроситься" keyboard button. */
+    miniAppUrl: string;
   };
 }
 
@@ -134,6 +136,10 @@ export const loadConfig = (): CopilotConfig => {
         "udevs-hrms-hickvision",
       ),
       webUrl: optional("HRMS_WEB_URL")?.replace(/\/+$/, "") ?? null,
+      miniAppUrl: str("TELEGRAM_MINIAPP_URL", "https://employee.ucode.co").replace(
+        /\/+$/,
+        "",
+      ),
     },
   };
 };

@@ -13,6 +13,13 @@ export interface InlineButton {
   callbackData?: string;
 }
 
+/** A button of the keyboard under the input box, in Telegram's own shape. */
+export interface KeyboardButton {
+  text: string;
+  /** Opens the mini app instead of sending `text` — private chats only. */
+  web_app?: { url: string };
+}
+
 /**
  * The slice of the Bot API this service uses.
  *
@@ -39,7 +46,7 @@ export class TelegramApi {
    * times.
    */
   /**
-   * @param keyboard labels for the keyboard under the input box, attached to
+   * @param keyboard rows of the keyboard under the input box, attached to
    *   this message. Telegram keeps it until it is replaced, so it is sent once
    *   per chat rather than with every reply — and never together with inline
    *   buttons, which occupy the same field.
@@ -48,7 +55,7 @@ export class TelegramApi {
     chatId: string,
     text: string,
     buttons: InlineButton[][] = [],
-    keyboard: string[] = [],
+    keyboard: KeyboardButton[][] = [],
   ): Promise<number> {
     const parts = splitMessage(text);
     let firstId = 0;
@@ -68,7 +75,7 @@ export class TelegramApi {
           : last && keyboard.length > 0
             ? {
                 reply_markup: {
-                  keyboard: [keyboard.map((text) => ({ text }))],
+                  keyboard,
                   resize_keyboard: true,
                   is_persistent: true,
                 },

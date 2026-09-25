@@ -6,7 +6,12 @@ import { ConversationStore } from "../copilot/conversation.store";
 import { CopilotService } from "../copilot/copilot.service";
 import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
 import { CONFIRM_PREFIX, REJECT_PREFIX, escapeHtml, renderAnswer } from "./render";
-import { TelegramApi, splitMessage, type InlineButton } from "./telegram.api";
+import {
+  TelegramApi,
+  splitMessage,
+  type InlineButton,
+  type KeyboardButton,
+} from "./telegram.api";
 import { TelegramCallerService, type ChatIdentity } from "./telegram-caller.service";
 import { COMPANY_BUTTON, RESET_BUTTON, routeUpdate } from "./update-router";
 
@@ -36,6 +41,13 @@ const PICK_COMPANY_TEXT =
   "Вы числитесь в нескольких компаниях. По какой отвечать?";
 
 const NOTHING_PENDING_TEXT = "Это действие уже неактуально.";
+
+/**
+ * Opens the absence form in the mini app. A web_app button sends no text, so
+ * unlike the other two the router never sees it. hickvision sends the same
+ * button right after /start linking (telegram-employee-link.js) — change both.
+ */
+const ABSENCE_BUTTON = "🙋 Отпроситься";
 
 /**
  * Title of the Conversation /company opens before any question exists.
@@ -514,10 +526,20 @@ export class TelegramService implements OnModuleInit {
    * replaces it, and re-sending one the person has collapsed would push it back
    * open on every single answer.
    */
-  private keyboardFor(chatId: string): string[] {
+  private keyboardFor(chatId: string): KeyboardButton[][] {
     if (this.keyboardShown.has(chatId)) return [];
     this.keyboardShown.add(chatId);
-    return [RESET_BUTTON, COMPANY_BUTTON];
+    return [
+      [
+        {
+          text: ABSENCE_BUTTON,
+          // `?open=absence` is read by the mini app itself: a keyboard button
+          // carries no start_param, unlike a t.me/…?startapp link.
+          web_app: { url: `${this.config.telegram.miniAppUrl}/?open=absence` },
+        },
+      ],
+      [{ text: RESET_BUTTON }, { text: COMPANY_BUTTON }],
+    ];
   }
 
   /**
