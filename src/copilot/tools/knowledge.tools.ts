@@ -105,6 +105,18 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
         const { articles, total } = await this.fetchAll(ctx);
         const { texts, skipped } = await indexFiles(articles);
         const hits = rank(articles, terms, texts);
+        // When the query names an article — «скинь остатки» and there is
+        // «Остатки» — the person wants that article's files. A drug PDF that
+        // says «остаток» somewhere inside is a hit, not an answer; a file
+        // *named* after the subject still is one («ПД Аллерайз» in the spec).
+        const mentions = (text: string): boolean =>
+          terms.some((t) => fold(text).includes(t));
+        const named = hits.some((hit) => hit.files?.length && mentions(hit.title));
+        const offered = hits.flatMap((hit) =>
+          (hit.files ?? []).filter(
+            (file) => !named || mentions(hit.title) || mentions(file.name),
+          ),
+        );
 
         return {
           ok: true,
@@ -114,10 +126,7 @@ export class CopilotKnowledgeTools implements CopilotToolGroup {
           // A file that answered the search is offered for download right here,
           // so "скинь прайс" costs one search instead of reading a megabyte of
           // PDF into the conversation to produce a button.
-          links: uniqueBy(
-            hits.flatMap((hit) => hit.files ?? []),
-            (file) => file.url,
-          )
+          links: uniqueBy(offered, (file) => file.url)
             .slice(0, MAX_LINKS)
             .map((file) => fileLink(file.name, file.url)),
           data: {

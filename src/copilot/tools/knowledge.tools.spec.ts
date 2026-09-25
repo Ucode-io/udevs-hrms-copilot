@@ -837,6 +837,51 @@ describe("kb_search: an article is its subtree", () => {
     expect(labels).toContain("Скачать «Instruction Allerayz rus.pdf»");
   });
 
+  // The Vegapharm case: «Остатки» holds the stock PDF, and a drug file that says
+  // «остаток» somewhere inside matched too. Asked for «остатки», the person
+  // wants the one PDF, not every product file that mentions the word.
+  it("offers only the named article's files when the rest matched by text", async () => {
+    const client = new UcodeClient(config);
+    const corpus: UcodeItem[] = [
+      {
+        guid: "eeeeeeee-0000-4000-8000-000000000005",
+        knowledge_base_articles_id: null,
+        title: "Остатки",
+        icon: "📦",
+        content: JSON.stringify([file("Stock 24.09.2026.csv")]),
+      },
+      {
+        guid: "ffffffff-0000-4000-8000-000000000006",
+        knowledge_base_articles_id: null,
+        title: "Продакт Файлы",
+        icon: "📕",
+        content: JSON.stringify([file("Мелдовенс.csv")]),
+      },
+    ];
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, q) =>
+        (q.offset ?? 0) === 0
+          ? { count: corpus.length, response: corpus }
+          : { count: corpus.length, response: [] },
+      );
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async () =>
+      new Response("Остаточный срок годности 24 месяца", {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      }),
+    );
+
+    const result = await toolNamed(
+      new CopilotKnowledgeTools(client).getTools(),
+      "kb_search",
+    ).execute({ query: "остат" }, ctx);
+
+    expect((result.links ?? []).map((l) => l.label)).toEqual([
+      "Скачать «Stock 24.09.2026.csv»",
+    ]);
+  });
+
   it("says which sub-article a file came from", async () => {
     const hit = (
       (await tool().execute({ query: "аллерайз" }, ctx)).data as {
