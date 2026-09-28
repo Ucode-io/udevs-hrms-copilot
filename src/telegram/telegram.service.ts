@@ -319,7 +319,7 @@ export class TelegramService implements OnModuleInit {
           {
             type: "text_delta",
             text: links.length
-              ? `«${article}»`
+              ? `Вот ${links.length === 1 ? "файл" : "файлы"} из раздела «${article}» 👇`
               : `В разделе «${article}» файлов не нашлось.`,
           },
           ...links.map((link) => ({ type: "link" as const, link })),
