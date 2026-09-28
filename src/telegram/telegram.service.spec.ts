@@ -330,6 +330,19 @@ describe("a question in a private chat", () => {
     ]);
   });
 
+  it("puts the keyboard back after /start, whose keyboard replaced it", async () => {
+    const { service } = build({ identities: [identity("co-1", "Udevs")] });
+
+    await service.handleUpdate(ask());
+    await service.handleUpdate(ask("/start"));
+    await service.handleUpdate(ask("а за август?"));
+
+    const withKeyboard = api.sendMessage.mock.calls.filter(
+      (call) => (call[3] ?? []).length > 0,
+    );
+    expect(withKeyboard).toHaveLength(2);
+  });
+
   it("does not re-edit when the next tool says the same thing", async () => {
     const { service } = build({
       identities: [identity("co-1", "Udevs")],

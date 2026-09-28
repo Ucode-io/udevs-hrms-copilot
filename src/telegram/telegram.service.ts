@@ -164,6 +164,11 @@ export class TelegramService implements OnModuleInit {
     try {
       switch (routed.kind) {
         case "forward":
+          // hickvision answers /start and a shared contact with its own
+          // keyboard, which replaces ours — so the next answer puts ours back.
+          this.keyboardShown.delete(
+            String((update as { message?: { chat?: { id?: unknown } } }).message?.chat?.id),
+          );
           await this.forward(update);
           return;
         case "chat":
