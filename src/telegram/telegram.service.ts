@@ -13,7 +13,12 @@ import {
   type KeyboardButton,
 } from "./telegram.api";
 import { TelegramCallerService, type ChatIdentity } from "./telegram-caller.service";
-import { COMPANY_BUTTON, RESET_BUTTON, routeUpdate } from "./update-router";
+import {
+  COMPANY_BUTTON,
+  RESET_BUTTON,
+  VEGAPHARM_HOTKEYS,
+  routeUpdate,
+} from "./update-router";
 
 /**
  * Idle time after which a chat's Conversation is considered finished.
@@ -29,6 +34,9 @@ const CONVERSATION_MAX_IDLE_MS = 12 * 60 * 60_000;
 const TYPING_INTERVAL_MS = 4_000;
 
 const COMPANY_PREFIX = "co:";
+
+/** The only Company with hot buttons — the admin panel checks the same id. */
+const VEGAPHARM_COMPANY_ID = "c9a7fee7-e210-477e-bee3-5f18e388e630";
 
 /** How long an unanswered "which Company?" prompt is worth remembering. */
 const COMPANY_PROMPT_MAX_AGE_MS = 60 * 60_000;
@@ -117,14 +125,15 @@ export class TelegramService implements OnModuleInit {
   >();
 
   /**
-   * Chats that already have the keyboard under their input box.
+   * Chats that already have the keyboard under their input box, and whether
+   * that keyboard carries the hot buttons.
    *
    * ponytail: in-process, like the two maps around it. Telegram keeps the
    * keyboard until it is replaced, so the cost of forgetting is one redundant
    * reply_markup on the first answer after a restart — invisible to the person,
    * and cheaper than a collection to remember it in.
    */
-  private readonly keyboardShown = new Set<string>();
+  private readonly keyboardShown = new Map<string, boolean>();
 
   constructor(
     @Inject(CONFIG) private readonly config: CopilotConfig,
@@ -283,6 +292,7 @@ export class TelegramService implements OnModuleInit {
     try {
       await this.deliver(
         chatId,
+        caller.companiesId,
         this.copilot.streamChat(caller, { conversationId: id, message: text }),
       );
     } finally {
@@ -301,6 +311,7 @@ export class TelegramService implements OnModuleInit {
    */
   private async deliver(
     chatId: string,
+    companiesId: string,
     stream: AsyncGenerator<CopilotStreamEvent>,
   ): Promise<void> {
     const events: CopilotStreamEvent[] = [];
@@ -319,7 +330,7 @@ export class TelegramService implements OnModuleInit {
 
       statusId = statusId
         ? (await this.api.editText(chatId, statusId, label), statusId)
-        : await this.api.sendMessage(chatId, label, [], this.keyboardFor(chatId));
+        : await this.api.sendMessage(chatId, label, [], this.keyboardFor(chatId, companiesId));
     }
 
     const answer = renderAnswer(events, this.config.telegram.webUrl);
@@ -338,7 +349,7 @@ export class TelegramService implements OnModuleInit {
         chatId,
         head,
         headButtons,
-        headButtons.length === 0 ? this.keyboardFor(chatId) : [],
+        headButtons.length === 0 ? this.keyboardFor(chatId, companiesId) : [],
       );
     }
 
@@ -402,6 +413,7 @@ export class TelegramService implements OnModuleInit {
     try {
       await this.deliver(
         chatId,
+        open.caller.companiesId,
         this.copilot.streamConfirm(open.caller, {
           conversationId: open.conversationId,
           actionId,
@@ -452,7 +464,7 @@ export class TelegramService implements OnModuleInit {
         chatId,
         "Задайте вопрос.",
         [],
-        this.keyboardFor(chatId),
+        this.keyboardFor(chatId, picked.caller.companiesId),
       );
       return;
     }
@@ -468,7 +480,7 @@ export class TelegramService implements OnModuleInit {
       chatId,
       "Начинаю заново. О чём спросить?",
       [],
-      this.keyboardFor(chatId),
+      this.keyboardFor(chatId, null),
     );
   }
 
@@ -519,16 +531,27 @@ export class TelegramService implements OnModuleInit {
   }
 
   /**
-   * The keyboard labels, the first time this chat is answered — nothing after
-   * that.
+   * The keyboard labels, the first time this chat is answered — and again only
+   * when the Company changes whether it has hot buttons, nothing otherwise.
    *
    * Once is enough because Telegram keeps a reply keyboard until something
    * replaces it, and re-sending one the person has collapsed would push it back
    * open on every single answer.
+   *
+   * `companiesId` null means the Company is not known yet (after /new with
+   * several): the chat keeps whatever it has, and the next answer settles it.
    */
-  private keyboardFor(chatId: string): KeyboardButton[][] {
-    if (this.keyboardShown.has(chatId)) return [];
-    this.keyboardShown.add(chatId);
+  private keyboardFor(
+    chatId: string,
+    companiesId: string | null,
+  ): KeyboardButton[][] {
+    const shown = this.keyboardShown.get(chatId);
+    const hotkeys =
+      companiesId === null
+        ? (shown ?? false)
+        : companiesId === VEGAPHARM_COMPANY_ID;
+    if (shown === hotkeys) return [];
+    this.keyboardShown.set(chatId, hotkeys);
     return [
       [
         {
@@ -538,6 +561,9 @@ export class TelegramService implements OnModuleInit {
           web_app: { url: `${this.config.telegram.miniAppUrl}/?open=absence` },
         },
       ],
+      ...(hotkeys
+        ? [VEGAPHARM_HOTKEYS.map(({ label }) => ({ text: label }))]
+        : []),
       [{ text: RESET_BUTTON }, { text: COMPANY_BUTTON }],
     ];
   }

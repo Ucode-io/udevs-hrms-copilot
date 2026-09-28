@@ -306,6 +306,30 @@ describe("a question in a private chat", () => {
     ]);
   });
 
+  it("gives Vegapharm its hot buttons, and swaps the keyboard with the Company", async () => {
+    const vegapharm = identity("c9a7fee7-e210-477e-bee3-5f18e388e630", "Vegapharm");
+    const { service } = build({ identities: [vegapharm, identity("co-1", "Udevs")] });
+
+    await service.handleUpdate(ask());
+    await service.handleUpdate({
+      callback_query: {
+        id: "cb1",
+        data: `co:${vegapharm.caller.companiesId}`,
+        message: { chat: { id: 777 }, message_id: 42 },
+      },
+    });
+
+    const keyboards = api.sendMessage.mock.calls
+      .map((call) => call[3] ?? [])
+      .filter((keyboard) => keyboard.length > 0);
+    expect(keyboards).toHaveLength(1);
+    expect(keyboards[0][1]).toEqual([
+      { text: "💰 Прайс" },
+      { text: "📦 Остатки" },
+      { text: "⏳ Сроковые позиции" },
+    ]);
+  });
+
   it("does not re-edit when the next tool says the same thing", async () => {
     const { service } = build({
       identities: [identity("co-1", "Udevs")],

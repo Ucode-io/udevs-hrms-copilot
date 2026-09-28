@@ -104,6 +104,14 @@ describe("routeUpdate", () => {
     });
   });
 
+  it("turns a hot button into the question the admin panel's button asks", () => {
+    expect(routeUpdate({ message: { chat: privateChat, text: "💰 Прайс" } })).toEqual({
+      kind: "chat",
+      chatId: "777",
+      text: "Скинь файлы из раздела «Прайс» базы знаний",
+    });
+  });
+
   it("survives junk", () => {
     expect(routeUpdate(null).kind).toBe("ignore");
     expect(routeUpdate({}).kind).toBe("ignore");

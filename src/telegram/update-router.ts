@@ -40,6 +40,21 @@ const COMPANY = /^\/company(?:@\S+)?\s*$/i;
 export const RESET_BUTTON = "🔄 Заново";
 export const COMPANY_BUTTON = "🏢 Компания";
 
+/**
+ * Vegapharm's hot buttons — the same three the admin panel's AI chat has
+ * (CopilotPanel.tsx), asking the same question. Vegapharm keeps these lists as
+ * Knowledge Base articles; kb_search hands an article's files back as download
+ * buttons. `article` is the exact title in the tree — the search matches on it.
+ *
+ * Read for everyone, shown only to Vegapharm: typed by hand elsewhere, one is
+ * just a Knowledge Base question about the person's own Company.
+ */
+export const VEGAPHARM_HOTKEYS = [
+  { label: "💰 Прайс", article: "Прайс" },
+  { label: "📦 Остатки", article: "Остатки" },
+  { label: "⏳ Сроковые позиции", article: "Сроки по регионам" },
+];
+
 export const routeUpdate = (update: unknown): RoutedUpdate => {
   const u = update as {
     message?: {
@@ -92,6 +107,15 @@ export const routeUpdate = (update: unknown): RoutedUpdate => {
   if (NEW.test(text) || text === RESET_BUTTON) return { kind: "reset", chatId };
   if (COMPANY.test(text) || text === COMPANY_BUTTON) {
     return { kind: "switchCompany", chatId };
+  }
+
+  const hotkey = VEGAPHARM_HOTKEYS.find((h) => h.label === text);
+  if (hotkey) {
+    return {
+      kind: "chat",
+      chatId,
+      text: `Скинь файлы из раздела «${hotkey.article}» базы знаний`,
+    };
   }
 
   return { kind: "chat", chatId, text };
