@@ -360,6 +360,39 @@ describe("a question in a private chat", () => {
     expect(withKeyboard).toHaveLength(2);
   });
 
+  it("puts the hot buttons up right after a Vegapharm employee links", async () => {
+    const { service } = build({
+      identities: [identity("c9a7fee7-e210-477e-bee3-5f18e388e630", "Vegapharm")],
+    });
+
+    await service.handleUpdate({
+      message: {
+        chat: { id: 777, type: "private" },
+        contact: { phone_number: "998911645433" },
+      },
+    });
+
+    expect(forwarded).toHaveLength(1);
+    expect(api.sendMessage.mock.calls[0][3]?.[1]).toEqual([
+      { text: "💰 Прайс" },
+      { text: "📦 Остатки" },
+      { text: "⏳ Сроковые позиции" },
+    ]);
+  });
+
+  it("leaves everyone else with hickvision's keyboard after linking", async () => {
+    const { service } = build({ identities: [identity("co-1", "Udevs")] });
+
+    await service.handleUpdate({
+      message: {
+        chat: { id: 777, type: "private" },
+        contact: { phone_number: "998901234567" },
+      },
+    });
+
+    expect(sent).toEqual([]);
+  });
+
   it("answers every tap of a hot button with its files, without the model", async () => {
     // Through the model the second tap came back as «кнопка уже выше» — with no
     // button under it.

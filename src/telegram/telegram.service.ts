@@ -165,14 +165,25 @@ export class TelegramService implements OnModuleInit {
     const routed = routeUpdate(update);
     try {
       switch (routed.kind) {
-        case "forward":
+        case "forward": {
+          const message = (
+            update as {
+              message?: { chat?: { id?: unknown; type?: string }; contact?: unknown };
+            }
+          ).message;
+          const chatId = String(message?.chat?.id);
           // hickvision answers /start and a shared contact with its own
           // keyboard, which replaces ours — so the next answer puts ours back.
-          this.keyboardShown.delete(
-            String((update as { message?: { chat?: { id?: unknown } } }).message?.chat?.id),
-          );
+          this.keyboardShown.delete(chatId);
           await this.forward(update);
+          // That keyboard has no hot buttons, and "the next answer" is a
+          // question away: a Vegapharm employee who just linked would not know
+          // the buttons exist.
+          if (message?.contact && message.chat?.type === "private") {
+            await this.offerHotkeys(chatId);
+          }
           return;
+        }
         case "chat":
           await this.onQuestion(routed.chatId, routed.text);
           return;
@@ -330,6 +341,20 @@ export class TelegramService implements OnModuleInit {
     } finally {
       stop();
     }
+  }
+
+  /** The keyboard with the hot buttons, for a chat that has a Vegapharm card. */
+  private async offerHotkeys(chatId: string): Promise<void> {
+    const identities = await this.callers.identities(chatId);
+    if (!identities.some((i) => i.caller.companiesId === VEGAPHARM_COMPANY_ID)) {
+      return;
+    }
+    await this.api.sendMessage(
+      chatId,
+      "Прайс, остатки и сроковые позиции — кнопками внизу 👇",
+      [],
+      this.keyboardFor(chatId, VEGAPHARM_COMPANY_ID),
+    );
   }
 
   /**
@@ -573,6 +598,8 @@ export class TelegramService implements OnModuleInit {
       await this.api.sendMessage(
         chatId,
         `Вы числитесь только в одной компании — «${identities[0].companyName}».`,
+        [],
+        this.keyboardFor(chatId, identities[0].caller.companiesId),
       );
       return;
     }
