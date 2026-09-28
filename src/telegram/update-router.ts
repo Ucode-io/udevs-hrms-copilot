@@ -8,6 +8,8 @@
 export type RoutedUpdate =
   /** A question for the Copilot. */
   | { kind: "chat"; chatId: string; text: string }
+  /** A hot button: one Knowledge Base section's files. */
+  | { kind: "hotkey"; chatId: string; text: string; article: string }
   /** A tapped inline button. */
   | {
       kind: "callback";
@@ -42,12 +44,9 @@ export const COMPANY_BUTTON = "🏢 Компания";
 
 /**
  * Vegapharm's hot buttons — the same three the admin panel's AI chat has
- * (CopilotPanel.tsx), asking the same question. Vegapharm keeps these lists as
- * Knowledge Base articles; kb_search hands an article's files back as download
- * buttons. `article` is the exact title in the tree — the search matches on it.
- *
- * Read for everyone, shown only to Vegapharm: typed by hand elsewhere, one is
- * just a Knowledge Base question about the person's own Company.
+ * (CopilotPanel.tsx). Vegapharm keeps these lists as Knowledge Base articles;
+ * kb_search hands an article's files back as download buttons. `article` is
+ * the exact title in the tree — the search matches on it.
  */
 export const VEGAPHARM_HOTKEYS = [
   { label: "💰 Прайс", article: "Прайс" },
@@ -110,13 +109,7 @@ export const routeUpdate = (update: unknown): RoutedUpdate => {
   }
 
   const hotkey = VEGAPHARM_HOTKEYS.find((h) => h.label === text);
-  if (hotkey) {
-    return {
-      kind: "chat",
-      chatId,
-      text: `Скинь файлы из раздела «${hotkey.article}» базы знаний`,
-    };
-  }
+  if (hotkey) return { kind: "hotkey", chatId, text, article: hotkey.article };
 
   return { kind: "chat", chatId, text };
 };

@@ -29,7 +29,8 @@ import { CopilotKnowledgeTools } from "./tools/knowledge.tools";
     CopilotNavigationTools,
     CopilotKnowledgeTools,
   ],
-  // The Telegram surface runs the same loop against the same Conversations.
-  exports: [CopilotService, ConversationStore],
+  // The Telegram surface runs the same loop against the same Conversations,
+  // and calls kb_search itself for the hot buttons.
+  exports: [CopilotService, ConversationStore, CopilotToolRegistry],
 })
 export class CopilotModule {}

@@ -83,6 +83,22 @@ const build = (overrides: {
     ),
     streamConfirm: jest.fn(),
   };
+  const kbSearch = {
+    execute: jest.fn(async () => ({
+      ok: true,
+      summary: "1 совпадение",
+      links: [
+        {
+          id: "l1",
+          label: "Скачать «Stock.pdf»",
+          href: "https://cdn.u-code.io/stock.pdf",
+          external: true,
+          kind: "file",
+        },
+      ],
+    })),
+  };
+  const tools = { get: jest.fn(() => kbSearch) };
 
   const service = new TelegramService(
     config,
@@ -91,8 +107,9 @@ const build = (overrides: {
     copilot as never,
     store as never,
     ucode as never,
+    tools as never,
   );
-  return { service, callers, store, copilot };
+  return { service, callers, store, copilot, kbSearch };
 };
 
 beforeEach(() => {
@@ -341,6 +358,30 @@ describe("a question in a private chat", () => {
       (call) => (call[3] ?? []).length > 0,
     );
     expect(withKeyboard).toHaveLength(2);
+  });
+
+  it("answers every tap of a hot button with its files, without the model", async () => {
+    // Through the model the second tap came back as «кнопка уже выше» — with no
+    // button under it.
+    const vegapharm = identity("c9a7fee7-e210-477e-bee3-5f18e388e630", "Vegapharm");
+    const { service, copilot, kbSearch } = build({
+      identities: [identity("co-1", "Udevs"), vegapharm],
+    });
+
+    await service.handleUpdate(ask("📦 Остатки"));
+    await service.handleUpdate(ask("📦 Остатки"));
+
+    expect(copilot.streamChat).not.toHaveBeenCalled();
+    expect(kbSearch.execute).toHaveBeenCalledTimes(2);
+    expect(kbSearch.execute).toHaveBeenCalledWith(
+      { query: "Остатки" },
+      { caller: vegapharm.caller },
+    );
+    for (const call of api.sendMessage.mock.calls) {
+      expect(call[2]).toEqual([
+        [{ text: "Скачать «Stock.pdf»", url: "https://cdn.u-code.io/stock.pdf" }],
+      ]);
+    }
   });
 
   it("does not re-edit when the next tool says the same thing", async () => {

@@ -4,6 +4,7 @@ import { UcodeClient } from "../ucode/ucode.client";
 import type { CallerContext } from "../ucode/ucode.types";
 import { ConversationStore } from "../copilot/conversation.store";
 import { CopilotService } from "../copilot/copilot.service";
+import { CopilotToolRegistry } from "../copilot/tools/tool-registry.service";
 import type { CopilotStreamEvent } from "../copilot/types/copilot.types";
 import { CONFIRM_PREFIX, REJECT_PREFIX, escapeHtml, renderAnswer } from "./render";
 import {
@@ -142,6 +143,7 @@ export class TelegramService implements OnModuleInit {
     private readonly copilot: CopilotService,
     private readonly store: ConversationStore,
     private readonly ucode: UcodeClient,
+    private readonly tools: CopilotToolRegistry,
   ) {}
 
   /**
@@ -173,6 +175,9 @@ export class TelegramService implements OnModuleInit {
           return;
         case "chat":
           await this.onQuestion(routed.chatId, routed.text);
+          return;
+        case "hotkey":
+          await this.onHotkey(routed.chatId, routed.text, routed.article);
           return;
         case "callback":
           await this.onCallback(
@@ -275,6 +280,56 @@ export class TelegramService implements OnModuleInit {
         },
       ]),
     );
+  }
+
+  /**
+   * A hot button: one Knowledge Base section's files, straight from kb_search
+   * with no model in between.
+   *
+   * Through the model a second tap on the same button was answered from the
+   * Conversation — «кнопка уже выше» — and came back without a button. A prompt
+   * cannot make the call happen, and thinking rules out forcing it with
+   * tool_choice. This way every tap is a search, and costs no model call.
+   */
+  private async onHotkey(
+    chatId: string,
+    text: string,
+    article: string,
+  ): Promise<void> {
+    // The buttons are Vegapharm's, so the answer is too, whatever Company the
+    // open Conversation is about. Typed by someone outside Vegapharm, the label
+    // is just a question.
+    const identity = (await this.callers.identities(chatId)).find(
+      (i) => i.caller.companiesId === VEGAPHARM_COMPANY_ID,
+    );
+    const search = this.tools.get("kb_search");
+    if (!identity || !search) {
+      await this.onQuestion(chatId, text);
+      return;
+    }
+
+    const stop = this.startTyping(chatId);
+    try {
+      const { links = [] } = await search.execute(
+        { query: article },
+        { caller: identity.caller },
+      );
+      const answer = renderAnswer(
+        [
+          {
+            type: "text_delta",
+            text: links.length
+              ? `«${article}»`
+              : `В разделе «${article}» файлов не нашлось.`,
+          },
+          ...links.map((link) => ({ type: "link" as const, link })),
+        ],
+        this.config.telegram.webUrl,
+      );
+      await this.api.sendMessage(chatId, answer.text, answer.buttons);
+    } finally {
+      stop();
+    }
   }
 
   /**

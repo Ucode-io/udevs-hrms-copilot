@@ -104,11 +104,12 @@ describe("routeUpdate", () => {
     });
   });
 
-  it("turns a hot button into the question the admin panel's button asks", () => {
+  it("reads a hot button as the section it stands for", () => {
     expect(routeUpdate({ message: { chat: privateChat, text: "💰 Прайс" } })).toEqual({
-      kind: "chat",
+      kind: "hotkey",
       chatId: "777",
-      text: "Скинь файлы из раздела «Прайс» базы знаний",
+      text: "💰 Прайс",
+      article: "Прайс",
     });
   });
 
