@@ -1268,7 +1268,7 @@ const rank = (
   terms: string[],
   indexed: Map<string, string>,
 ): SearchHit[] => {
-  const hits: SearchHit[] = [];
+  const hits: Array<{ hit: SearchHit; inTitle: number }> = [];
   const children = childrenByParent(articles);
 
   for (const article of articles) {
@@ -1336,13 +1336,26 @@ const rank = (
             .slice(0, MAX_FILES_PER_HIT)
             .map((f) => ({ name: f.name, url: f.url }));
       if (files.length > 0) best.files = files;
-      hits.push(best);
+      hits.push({
+        hit: best,
+        inTitle: terms.filter((t) => fold(article.title).includes(t)).length,
+      });
     }
   }
 
-  return hits
-    .sort((a, b) => b.matched.length - a.matched.length)
-    .slice(0, MAX_HITS);
+  return (
+    hits
+      // On a tie the article the query names comes first. Asked for «Остатки»,
+      // drug PDFs that say «остатки» somewhere inside matched just as many
+      // terms, came earlier in the base, and pushed «Остатки» itself out of
+      // MAX_HITS — the stock PDF never reached the person.
+      .sort(
+        (a, b) =>
+          b.hit.matched.length - a.hit.matched.length || b.inTitle - a.inTitle,
+      )
+      .slice(0, MAX_HITS)
+      .map(({ hit }) => hit)
+  );
 };
 
 /**

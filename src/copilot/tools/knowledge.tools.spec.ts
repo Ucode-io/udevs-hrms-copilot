@@ -882,6 +882,52 @@ describe("kb_search: an article is its subtree", () => {
     ]);
   });
 
+  // Same base, once the drug PDFs have been read: more of them mention the word
+  // than MAX_HITS has room for, and they come before «Остатки» in the base.
+  it("keeps the named article when files that mention it outnumber the hits", async () => {
+    const client = new UcodeClient(config);
+    const corpus: UcodeItem[] = [
+      ...["Мелдовенс", "Кокарбенс", "Кардио", "Аллерайз", "Вегтазон", "Сетимед"].map(
+        (drug, i) => ({
+          guid: `dddddddd-0000-4000-8000-00000000001${i}`,
+          knowledge_base_articles_id: null,
+          title: drug,
+          icon: "💊",
+          content: JSON.stringify([file(`${drug}.csv`)]),
+        }),
+      ),
+      {
+        guid: "eeeeeeee-0000-4000-8000-000000000005",
+        knowledge_base_articles_id: null,
+        title: "Остатки",
+        icon: "📦",
+        content: JSON.stringify([file("Stock 24.09.2026.pdf")]),
+      },
+    ];
+    jest
+      .spyOn(client, "list")
+      .mockImplementation(async (_c, _t, q) =>
+        (q.offset ?? 0) === 0
+          ? { count: corpus.length, response: corpus }
+          : { count: corpus.length, response: [] },
+      );
+    (globalThis as { fetch?: unknown }).fetch = jest.fn(async () =>
+      new Response("Остатки препарата утилизировать", {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      }),
+    );
+
+    const result = await toolNamed(
+      new CopilotKnowledgeTools(client).getTools(),
+      "kb_search",
+    ).execute({ query: "Остатки" }, ctx);
+
+    expect((result.links ?? []).map((l) => l.label)).toEqual([
+      "Скачать «Stock 24.09.2026.pdf»",
+    ]);
+  });
+
   it("says which sub-article a file came from", async () => {
     const hit = (
       (await tool().execute({ query: "аллерайз" }, ctx)).data as {
