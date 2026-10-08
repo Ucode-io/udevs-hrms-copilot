@@ -294,10 +294,34 @@ describe("a question in a private chat", () => {
 
     await service.handleUpdate(ask());
 
-    // One message, not three: the progress line IS the answer once it arrives.
-    expect(sent).toEqual([{ chatId: "777", text: "⏳ Открываю отчёт…" }]);
+    // One answer, not three: the progress line IS the answer once it arrives.
+    // The keyboard goes out on its own line — never on the status, see below.
+    expect(sent).toEqual([
+      { chatId: "777", text: "⏳ Открываю отчёт…" },
+      { chatId: "777", text: "Кнопки — внизу 👇" },
+    ]);
     expect(api.editText).toHaveBeenNthCalledWith(1, "777", 101, "⏳ Считаю…");
     expect(api.editText).toHaveBeenNthCalledWith(2, "777", 101, "76 опозданий", []);
+  });
+
+  it("never puts the keyboard on the status line it later edits", async () => {
+    // editMessageText swaps the markup for an inline one: the keyboard riding
+    // on the status vanished once the answer came with a download button.
+    const { service } = build({
+      identities: [identity("co-1", "Udevs")],
+      chat: () =>
+        stream(
+          { type: "tool_call", toolName: "kb_search", toolUseId: "t1", risk: "read" },
+          { type: "text_delta", text: "Нашлась статья" },
+          { type: "link", link: { id: "l1", label: "Прайс.pdf", href: "https://files.test/p.pdf" } },
+        ),
+    });
+
+    await service.handleUpdate(ask());
+
+    const calls = api.sendMessage.mock.calls;
+    expect(calls[0][3] ?? []).toEqual([]);
+    expect(calls.filter((call) => (call[3] ?? []).length > 0)).toHaveLength(1);
   });
 
   it("puts the keyboard up once, not with every answer", async () => {
@@ -340,10 +364,11 @@ describe("a question in a private chat", () => {
       .map((call) => call[3] ?? [])
       .filter((keyboard) => keyboard.length > 0);
     expect(keyboards).toHaveLength(1);
-    expect(keyboards[0][1]).toEqual([
-      { text: "💰 Прайс" },
-      { text: "📦 Остатки" },
-      { text: "⏳ Сроковые позиции" },
+    expect(keyboards[0].slice(0, 4)).toEqual([
+      [{ text: "💰 Прайс" }],
+      [{ text: "📦 Остатки" }],
+      [{ text: "⏳ Сроковые позиции" }],
+      [expect.objectContaining({ text: "🙋 Отпроситься" })],
     ]);
   });
 
@@ -373,10 +398,10 @@ describe("a question in a private chat", () => {
     });
 
     expect(forwarded).toHaveLength(1);
-    expect(api.sendMessage.mock.calls[0][3]?.[1]).toEqual([
-      { text: "💰 Прайс" },
-      { text: "📦 Остатки" },
-      { text: "⏳ Сроковые позиции" },
+    expect(api.sendMessage.mock.calls[0][3]?.slice(0, 3)).toEqual([
+      [{ text: "💰 Прайс" }],
+      [{ text: "📦 Остатки" }],
+      [{ text: "⏳ Сроковые позиции" }],
     ]);
   });
 

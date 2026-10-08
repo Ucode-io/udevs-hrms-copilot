@@ -415,31 +415,32 @@ export class TelegramService implements OnModuleInit {
 
       statusId = statusId
         ? (await this.api.editText(chatId, statusId, label), statusId)
-        : await this.api.sendMessage(chatId, label, [], this.keyboardFor(chatId, companiesId));
+        : await this.api.sendMessage(chatId, label);
     }
 
     const answer = renderAnswer(events, this.config.telegram.webUrl);
     const parts = splitMessage(answer.text);
     const head = parts.shift() ?? "…";
     const headButtons = parts.length === 0 ? answer.buttons : [];
+    const tail = parts.join("\n\n");
+
+    // The keyboard rides only on a fresh message without inline buttons. The
+    // status line is edited into the answer, and editMessageText swaps the
+    // message's markup for an inline one — the keyboard on it vanished from the
+    // chat while keyboardShown still believed it was there.
+    const keyboard = this.keyboardFor(chatId, companiesId);
+    const rides = answer.buttons.length === 0 && (tail !== "" || !statusId);
 
     // The progress line becomes the answer. If the edit fails — an answer
     // identical to the status, a message too old to edit — the rest still goes
     // out below, so the person is never left with just "считаю…".
-    // An answer with no tool calls never sent a status, so this is the chat's
-    // first message and the keyboard rides on it instead.
     if (statusId) await this.api.editText(chatId, statusId, head, headButtons);
-    else {
-      await this.api.sendMessage(
-        chatId,
-        head,
-        headButtons,
-        headButtons.length === 0 ? this.keyboardFor(chatId, companiesId) : [],
-      );
-    }
+    else await this.api.sendMessage(chatId, head, headButtons, tail ? [] : keyboard);
 
-    if (parts.length > 0) {
-      await this.api.sendMessage(chatId, parts.join("\n\n"), answer.buttons);
+    if (tail) await this.api.sendMessage(chatId, tail, answer.buttons, keyboard);
+
+    if (keyboard.length > 0 && !rides) {
+      await this.api.sendMessage(chatId, "Кнопки — внизу 👇", [], keyboard);
     }
   }
 
@@ -640,6 +641,7 @@ export class TelegramService implements OnModuleInit {
     if (shown === hotkeys) return [];
     this.keyboardShown.set(chatId, hotkeys);
     return [
+      ...(hotkeys ? VEGAPHARM_HOTKEYS.map(({ label }) => [{ text: label }]) : []),
       [
         {
           text: ABSENCE_BUTTON,
@@ -648,9 +650,6 @@ export class TelegramService implements OnModuleInit {
           web_app: { url: `${this.config.telegram.miniAppUrl}/?open=absence` },
         },
       ],
-      ...(hotkeys
-        ? [VEGAPHARM_HOTKEYS.map(({ label }) => ({ text: label }))]
-        : []),
       [{ text: RESET_BUTTON }, { text: COMPANY_BUTTON }],
     ];
   }
